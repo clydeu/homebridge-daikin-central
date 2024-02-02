@@ -1,0 +1,42 @@
+{
+  "pluginAlias": "Homebridge Daikin Central",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "required": true,
+        "default": "Daikin Central"
+      },
+      "baseUrl": {
+        "title": "URI of the WIFI controller.",
+        "description": "Should be in the format of: http://aaa.bbb.ccc.ddd - IP Address",
+        "type": "string",
+        "required": true,
+        "default": "http://127.0.0.1",
+        "format": "uri"
+      },
+      "enabledZones": {
+        "title": "Enabled Zones",
+        "description": "Tick the number that is used. i.e. my controller have 8 zones but in actual only 4 of them are used.",
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "title": "Zone",
+          "type": "string",
+          "enum": ["1","2","3","4","5","6","7","8"]
+        }
+      },
+      "logToHttp": {
+        "title": "Sensor HTTP Log (Optional)",
+        "description": "Complete url path to send a http post message to. Example: http://somedomain.com/api/temperature. Payload will be {  \"sensor\": \"DAIKINCENTRAL\",  \"measurement\": \"Temperature\",  \"value\": [reading]}",
+        "type": "string",
+        "required": false,
+        "format": "uri"
+      }
+    }
+  }
+}

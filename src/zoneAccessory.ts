@@ -11,11 +11,11 @@ export class ZoneAccessory {
   constructor(
     private readonly platform: DaikinCentralPlatform,
     private readonly accessory: PlatformAccessory,
-    private readonly daikinService: DaikinService
+    private readonly daikinService: DaikinService,
   ) {
 
     this.daikinService.getAcModel().then((m) => {
-      const device = this.accessory.context.device as Device
+      const device = this.accessory.context.device as Device;
       this.accessory.getService(this.platform.Service.AccessoryInformation)!
         .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Daikin')
         .setCharacteristic(this.platform.Characteristic.Model, m.model)
@@ -24,23 +24,26 @@ export class ZoneAccessory {
         .setCharacteristic(this.platform.Characteristic.Name, device.displayName);
     });
 
-    this.service = this.accessory.getService(this.platform.Service.Switch) || 
+    this.service = this.accessory.getService(this.platform.Service.Switch) ||
                     this.accessory.addService(this.platform.Service.Switch);
 
     this.service.getCharacteristic(this.platform.Characteristic.On)
       .onSet(this.setOn.bind(this))
       .onGet(this.getOn.bind(this));
 
-    this.daikinService.addPowerSubscriber(() => { this.getOnValue() });
+    this.daikinService.addPowerSubscriber(() => {
+      this.getOnValue();
+    });
   }
 
   async setOn(value: CharacteristicValue) {
     this.on = value as boolean;
 
-    const device = this.accessory.context.device as Device
-    if (device.num !== undefined)
+    const device = this.accessory.context.device as Device;
+    if (device.num !== undefined) {
       this.daikinService.setZoneStatus(device.num, this.on);
-    
+    }
+
     this.platform.log.debug(`Set Zone#${device.num} On ->${value}`);
   }
 

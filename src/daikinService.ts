@@ -4,18 +4,20 @@ export type AcState = {
   currentTemp: number;
   heatingTemp: number;
   coolingTemp: number;
-}
+  fanSpeed: number;
+  fanAuto: boolean;
+};
 
 export type AcModel = {
   serial: string;
   firmware: string;
   model: string;
-}
+};
 
 export type TempThreshold = {
   low: number;
   high: number;
-}
+};
 
 export interface DaikinService{
   getAcModel(): Promise<AcModel>;
@@ -29,6 +31,8 @@ export interface DaikinService{
   setMode(mode: Mode) : Promise<void>;
   setHeatingTemp(temp: number) : Promise<void>;
   setCoolingTemp(temp: number) : Promise<void>;
+  setFanRate(frate: number) : Promise<void>;
+  setFanMode(isAuto: boolean) : Promise<void>;
   addPowerSubscriber(func: () => void) : void;
 }
 

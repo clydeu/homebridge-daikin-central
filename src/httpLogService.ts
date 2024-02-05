@@ -1,11 +1,11 @@
-import axios, { AxiosInstance }  from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import { Logger } from 'homebridge';
 
 export class HttpLogService{
   private readonly http: AxiosInstance;
   constructor(
     public readonly url: string,
-    private readonly log: Logger
+    private readonly log: Logger,
   ) {
     const myURL = new URL(url);
     this.http = axios.create({
@@ -13,7 +13,7 @@ export class HttpLogService{
       headers: {
         'User-Agent': 'axios',
         'Host': myURL.hostname,
-      }
+      },
     });
   }
 

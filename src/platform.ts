@@ -33,12 +33,12 @@ export class DaikinCentralPlatform implements DynamicPlatformPlugin {
       log.debug('Executed didFinishLaunching callback');
       await this.discoverDevices();
     });
-    this.daikinService = new DaikinSkyfiService(config["baseUrl"], log);
-    if (config["logToHttp"] !== undefined){
-      this.httpLogService = new HttpLogService(config["logToHttp"], log);
+    this.daikinService = new DaikinSkyfiService(config['baseUrl'], log);
+    if (config['logToHttp'] !== undefined){
+      this.httpLogService = new HttpLogService(config['logToHttp'], log);
     }
-    
-    this.enabledZones = config["enabledZones"] ?? [];
+
+    this.enabledZones = config['enabledZones'] ?? [];
   }
 
   configureAccessory(accessory: PlatformAccessory) {
@@ -53,8 +53,8 @@ export class DaikinCentralPlatform implements DynamicPlatformPlugin {
       zoneDevices.push({
         uniqueId: `Daikin-Central-Zone-${z}-${uniqueId}`,
         displayName: `Zone ${z}`,
-        num: parseInt(z)
-      })
+        num: parseInt(z),
+      });
     });
     return zoneDevices;
   }
@@ -64,7 +64,7 @@ export class DaikinCentralPlatform implements DynamicPlatformPlugin {
     // Create AC device
     this.registerDevice({
       uniqueId: 'Daikin Central AC' + model.serial,
-      displayName: 'Daikin'
+      displayName: 'Daikin',
     }, (accessory) => new ACAccessory(this, accessory, this.daikinService, this.httpLogService));
     // Create zone devices
     const zoneDevices = this.createZoneDevices(model.serial);

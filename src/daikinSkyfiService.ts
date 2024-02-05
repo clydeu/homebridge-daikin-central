@@ -1,5 +1,5 @@
 import { Logger } from 'homebridge';
-import axios, { AxiosAdapter, AxiosInstance }  from 'axios';
+import axios, { AxiosAdapter, AxiosInstance } from 'axios';
 import { Cache, throttleAdapterEnhancer, retryAdapterEnhancer } from 'axios-extensions';
 import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinService';
 import { v4 as uuidv4 } from 'uuid';
@@ -9,7 +9,7 @@ type SensorInfo = {
   ret?: string;
   err?: string;
   htemp: number;
-  otemp: number
+  otemp: number;
 };
 
 type ControlInfo = {
@@ -36,7 +36,7 @@ type ControlInfo = {
   filter_sign_info: number;
   cent: number;
   en_cent: number;
-  remo: number
+  remo: number;
 };
 
 type ModelInfo = {
@@ -75,7 +75,7 @@ type ModelInfo = {
   heat_l: number;
   heat_h: number;
   frate_steps: number;
-  en_frate_auto: number
+  en_frate_auto: number;
 };
 
 type BasicInfo = {
@@ -106,13 +106,13 @@ type BasicInfo = {
   en_ch: number;
   holiday: number;
   en_hol: number;
-  sync_time: number
+  sync_time: number;
 };
 
 type ZoneInfo = {
   ret?: string;
   zone_name: string;
-  zone_onoff: string
+  zone_onoff: string;
 };
 
 type PowerSubFunc = () => void;
@@ -128,14 +128,15 @@ export class DaikinSkyfiService implements DaikinService {
   private readonly modeMapping = {
     1: Mode.HEAT,
     2: Mode.COOL,
-    3: Mode.AUTO
-  }
+    3: Mode.AUTO,
+  };
+
   private readonly http: AxiosInstance;
   private readonly powerSubscribers : PowerSubFunc[] = [];
-  private power = false;
+  private readonly cache: Cache<string, object>;
   constructor(
     private readonly url: string,
-    public readonly log: Logger
+    public readonly log: Logger,
   ) {
     const myURL = new URL(url);
     this.http = axios.create({
@@ -145,26 +146,43 @@ export class DaikinSkyfiService implements DaikinService {
         'User-Agent': 'axios',
         'Host': myURL.hostname,
       },
-      adapter: throttleAdapterEnhancer(retryAdapterEnhancer(axios.defaults.adapter as AxiosAdapter, {times: 5}), { threshold: 1000, cache: new Cache({ ttl: 5000, ttlAutopurge: true }) })
+      adapter: throttleAdapterEnhancer(retryAdapterEnhancer(axios.defaults.adapter as AxiosAdapter, {times: 5}), { threshold: 500 }),
     });
+    this.cache = new Cache({ ttl: 5 * 60 * 1000, ttlAutopurge: true }); // by default cache AC state for 5 mins.
   }
 
-  async getSensorInfo() : Promise<SensorInfo | null>{
+  async getSensorInfo(cache = true) : Promise<SensorInfo | null>{
+    const responsePromise = this.cache.get(this.get_sensor_info);
+    if (cache && responsePromise){
+      this.log.debug(`Using cached value for sensor info, refresh in ${Math.round(
+        this.cache.getRemainingTTL(this.get_sensor_info)/1000)}s`);
+      return responsePromise as SensorInfo;
+    }
     try {
+      this.log.debug('Getting new sensor info from AC controller.');
       const response = await this.http.get(this.get_sensor_info);
-      const data = this.parseResponse(response.data);
-      return data as SensorInfo;
+      const data = this.parseResponse(response.data) as SensorInfo;
+      this.cache.set(this.get_sensor_info, data, { ttl: 60 * 1000});
+      return data;
     } catch (error) {
       this.log.error('getSensorInfo error: ' + error);
       return null;
     }
   }
 
-  async getControlInfo(cache: boolean = true) : Promise<ControlInfo | null>{
+  async getControlInfo(cache = true) : Promise<ControlInfo | null>{
+    const responsePromise = this.cache.get(this.get_control_info);
+    if (cache && responsePromise){
+      this.log.debug(`Using cached value for control info, refresh in ${Math.round(
+        this.cache.getRemainingTTL(this.get_control_info)/1000)}s`);
+      return responsePromise as ControlInfo;
+    }
     try {
+      this.log.debug('Getting new control info from AC controller.');
       const response = await this.http.get(this.get_control_info, { cache: cache });
-      const data = this.parseResponse(response.data);
-      return data as ControlInfo;
+      const data = this.parseResponse(response.data) as ControlInfo;
+      this.cache.set(this.get_control_info, data);
+      return data;
     } catch (error) {
       this.log.error('getControlInfo error: ' + error);
       return null;
@@ -175,47 +193,74 @@ export class DaikinSkyfiService implements DaikinService {
     const sensorInfo = await this.getSensorInfo();
     const controlInfo = await this.getControlInfo();
 
+    let fanSpeed = controlInfo?.f_rate ?? 0;
+    if (controlInfo?.f_airside === 1) {
+      fanSpeed = 7;
+    }
+    if (controlInfo?.f_auto === 1 && fanSpeed > 5) {
+      fanSpeed = 5;
+    }
+
     return {
-      power: this.power, // (controlInfo?.pow === 1) ? true : false,
+      power: (controlInfo?.pow === 1) ? true : false,
       mode: this.modeMapping[controlInfo?.mode ?? 8],
       currentTemp: sensorInfo?.htemp ?? 0,
       heatingTemp: controlInfo?.dt1 ?? HeatingThresholdDefault.min,
       coolingTemp: controlInfo?.dt2 ?? CoolingThresholdDefault.min,
-    }
+      fanSpeed: fanSpeed,
+      fanAuto: controlInfo?.f_auto === 1 || controlInfo?.f_airside === 1,
+    };
   }
 
   async getCurrentTemperature(): Promise<number>{
-    const sensorInfo = await this.getSensorInfo();
+    const sensorInfo = await this.getSensorInfo(false);
     return sensorInfo?.htemp ?? 0;
   }
 
+  private timeoutId: ReturnType<typeof setTimeout> | null = null;
+  private controlInfo: ControlInfo | null = null;
   async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
-    const controlInfo = await this.getControlInfo(false);
-    if (controlInfo == null){
-      this.log.error('setControlInfo error: could not get control info. no change in settings.');
-      return;
-    }
-      
-    try {
+    if (this.controlInfo === null){
+      const controlInfo = await this.getControlInfo(false);
+      if (controlInfo === null){
+        this.log.error('setControlInfo error: could not get control info. no change in settings.');
+        return;
+      }
       controlInfo.ret = undefined;
-      updateControlInfo(controlInfo);
-      const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
-      const data = this.parseResponse(resp.data);
-      if (resp.status == 200 && data["ret"] === 'OK')
-        this.log.info('setControlInfo: successfully updated control info.');
-      else
-        this.log.error('setControlInfo error: failed to update control info.');  
-    } catch (error) {
-      this.log.error('setControlInfo error: ' + error);
+      this.controlInfo = controlInfo;
+    }
+
+    updateControlInfo(this.controlInfo);
+
+    if (this.timeoutId === null) {
+      this.timeoutId = setTimeout(async() => {
+        const controlInfo = this.controlInfo;
+        const timeoutId = this.timeoutId;
+        this.controlInfo = null;
+        this.timeoutId = null;
+        try {
+          this.cache.set(this.get_control_info, controlInfo as ControlInfo);
+          const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
+          const data = this.parseResponse(resp.data);
+          if (resp.status === 200 && data['ret'] === 'OK') {
+            this.log.info('setControlInfo: successfully updated control info.');
+          } else {
+            this.log.error('setControlInfo error: failed to update control info.');
+          }
+        } catch (error) {
+          this.log.error('setControlInfo error: ' + error);
+        } finally {
+          clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
+        }
+      }, 500);
     }
   }
 
   async setPower(on: boolean) : Promise<void>{
-    this.power = on;
-    // await this.setControlInfo((controlInfo) => { 
-    //   controlInfo.pow = (on) ? 1 : 0; 
-    //   this.log.info(`Updating power to ${controlInfo.pow}`);
-    // });
+    await this.setControlInfo((controlInfo) => {
+      controlInfo.pow = (on) ? 1 : 0;
+      this.log.info(`Updating power to ${controlInfo.pow}`);
+    });
     this.powerSubscribers.forEach((e) => e());
   }
 
@@ -231,7 +276,7 @@ export class DaikinSkyfiService implements DaikinService {
           controlInfo.stemp = controlInfo.dt2;
           break;
         case Mode.AUTO:
-          controlInfo.mode = 3
+          controlInfo.mode = 3;
           break;
       }
       this.log.info(`Updating mode to ${controlInfo.mode}`);
@@ -239,16 +284,55 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   async setHeatingTemp(temp: number) : Promise<void>{
-    await this.setControlInfo((controlInfo) => { 
-      controlInfo.stemp = temp; 
+    await this.setControlInfo((controlInfo) => {
+      controlInfo.stemp = temp;
+      controlInfo.dt1 = temp;
       this.log.info(`Updating heating temp to ${temp}`);
     });
   }
 
   async setCoolingTemp(temp: number) : Promise<void>{
-    await this.setControlInfo((controlInfo) => { 
+    await this.setControlInfo((controlInfo) => {
       controlInfo.stemp = temp;
+      controlInfo.dt2 = temp;
       this.log.info(`Updating cooling temp to ${temp}`);
+    });
+  }
+
+  async setFanRate(frate: number) : Promise<void>{
+    await this.setControlInfo((controlInfo) => {
+      controlInfo.f_rate = frate;
+      if (frate > 5 && controlInfo.f_auto === 1){
+        controlInfo.f_rate = 1;
+        controlInfo.f_auto = 0;
+        controlInfo.f_airside = 1;
+      }else if (frate <= 5 && controlInfo.f_airside === 1){
+        controlInfo.f_rate = frate;
+        controlInfo.f_auto = 1;
+        controlInfo.f_airside = 0;
+      } else {
+        controlInfo.f_rate = frate;
+      }
+      this.log.info(`Updating fan rate to ${frate}`);
+    });
+  }
+
+  async setFanMode(isAuto: boolean) : Promise<void>{
+    await this.setControlInfo((controlInfo) => {
+      let fanMode = '';
+      if (controlInfo.f_rate > 5 && isAuto){ // Airside
+        controlInfo.f_rate = 1;
+        controlInfo.f_airside = 1;
+        fanMode = 'airside';
+      } else if (isAuto){ // Auto
+        controlInfo.f_auto = 1;
+        fanMode = 'auto';
+      } else {
+        controlInfo.f_auto = 0;
+        controlInfo.f_airside = 0;
+        fanMode = 'manual';
+      }
+      this.log.info(`Updating fan mode to ${fanMode}`);
     });
   }
 
@@ -267,16 +351,16 @@ export class DaikinSkyfiService implements DaikinService {
     const modelInfo = await this.getModelInfo();
     return {
       low: modelInfo?.cool_l ?? HeatingThresholdDefault.min,
-      high: modelInfo?.cool_h ?? HeatingThresholdDefault.max 
-    }
+      high: modelInfo?.cool_h ?? HeatingThresholdDefault.max,
+    };
   }
 
   async getHeatingThreshold() : Promise<TempThreshold>{
     const modelInfo = await this.getModelInfo();
     return {
       low: modelInfo?.heat_l ?? HeatingThresholdDefault.min,
-      high: modelInfo?.heat_h ?? HeatingThresholdDefault.max 
-    }
+      high: modelInfo?.heat_h ?? HeatingThresholdDefault.max,
+    };
   }
 
   async getBasicInfo() : Promise<BasicInfo | null>{
@@ -291,18 +375,26 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   async getAcModel(): Promise<AcModel>{
-    var basicInfo = await this.getBasicInfo();
+    const basicInfo = await this.getBasicInfo();
     return {
       serial: basicInfo?.mac ?? uuidv4(),
       firmware: basicInfo?.ver.replace('_', '.') ?? '',
-      model: basicInfo?.ssid ?? 'Daikin Model'
-    }
+      model: basicInfo?.ssid ?? 'Daikin Model',
+    };
   }
 
-  private async getZoneInfo(cache: boolean = true) : Promise<ZoneInfo | null>{
+  private async getZoneInfo(cache = true) : Promise<ZoneInfo | null>{
+    const responsePromise = this.cache.get(this.get_zone_setting);
+    if (cache && responsePromise){
+      this.log.debug(`Using cached value for zone info, refresh in ${Math.round(this.cache.getRemainingTTL(this.get_zone_setting)/1000)}s`);
+      return responsePromise as ZoneInfo;
+    }
+
     try {
+      this.log.debug('Getting new zone info from AC controller.');
       const response = await this.http.get(this.get_zone_setting, {cache: cache});
       const data = this.parseResponse(response.data) as ZoneInfo;
+      this.cache.set(this.get_zone_setting, data);
       return data;
     } catch (error) {
       this.log.error('getZoneInfo error: ' + error);
@@ -312,9 +404,10 @@ export class DaikinSkyfiService implements DaikinService {
 
   async getZoneStatus(zoneNum: number) : Promise<boolean>{
     const data = await this.getZoneInfo();
-    if (data === null)
+    if (data === null) {
       return false;
-    
+    }
+
     const zones = decodeURIComponent(data.zone_onoff).split(';');
     return zones[zoneNum - 1] === '1';
   }
@@ -328,17 +421,19 @@ export class DaikinSkyfiService implements DaikinService {
 
     const zones = decodeURIComponent(zoneStatus.zone_onoff).split(';');
     zones[zoneNum -1] = (active) ? '1' : '0';
-    zoneStatus.zone_onoff = encodeURIComponent(zones.join(";"));
-    
+    zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
+    this.cache.set(this.get_zone_setting, zoneStatus);
+
     try {
-      const resp = await this.http.get(`${this.set_zone_setting}?zone_name=${zoneStatus.zone_name}&zone_onoff=${zoneStatus.zone_onoff}`, 
-                                        {cache: false });
+      const resp = await this.http.get(`${this.set_zone_setting}?zone_name=${zoneStatus.zone_name}&zone_onoff=${zoneStatus.zone_onoff}`,
+        {cache: false });
       const data = this.parseResponse(resp.data);
-      if (resp.status == 200 && data["ret"] === 'OK')
+      if (resp.status === 200 && data['ret'] === 'OK') {
         this.log.info('setZoneStatus: successfully updated zone info.');
-      else
+      } else {
         this.log.error('setZoneStatus error: failed to update zone info.');
-      
+      }
+
     } catch (error) {
       this.log.error('setZoneStatus error: ' + error);
     }
@@ -348,19 +443,19 @@ export class DaikinSkyfiService implements DaikinService {
     this.powerSubscribers.push(func);
   }
 
-  private parseResponse(response: string) : {} {
+  private parseResponse(response: string) : object {
     const vals = {};
     if (response) {
-        const items = response.split(',');
-        const length = items.length;
-        for (let i = 0; i < length; i++) {
-            const keyValue = items[i].split('=');
-            if (isNaN(+keyValue[1])) {
-              vals[keyValue[0]] = keyValue[1];
-            } else {
-              vals[keyValue[0]] = +keyValue[1];
-            }
+      const items = response.split(',');
+      const length = items.length;
+      for (let i = 0; i < length; i++) {
+        const keyValue = items[i].split('=');
+        if (isNaN(+keyValue[1])) {
+          vals[keyValue[0]] = keyValue[1];
+        } else {
+          vals[keyValue[0]] = +keyValue[1];
         }
+      }
     }
     return vals;
   }

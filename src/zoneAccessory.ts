@@ -7,6 +7,7 @@ export class ZoneAccessory {
   private service: Service;
 
   private on = false;
+  private acOn = false;
 
   constructor(
     private readonly platform: DaikinCentralPlatform,
@@ -37,6 +38,10 @@ export class ZoneAccessory {
   }
 
   async setOn(value: CharacteristicValue) {
+    if (!this.acOn) {
+      return;
+    }
+
     this.on = value as boolean;
 
     const device = this.accessory.context.device as Device;
@@ -56,6 +61,7 @@ export class ZoneAccessory {
   async getOnValue(){
     const acState = await this.daikinService.getAcState();
     const zoneStatus = await this.daikinService.getZoneStatus(this.accessory.context.device.num);
+    this.acOn = acState?.power;
     this.on = zoneStatus && acState?.power;
     this.service.updateCharacteristic(this.platform.Characteristic.On, this.on);
   }

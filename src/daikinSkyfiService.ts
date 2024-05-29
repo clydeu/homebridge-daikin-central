@@ -220,7 +220,7 @@ export class DaikinSkyfiService implements DaikinService {
 
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
   private controlInfo: ControlInfo | null = null;
-  private readonly controlInfoMutex = new Mutex()
+  private readonly controlInfoMutex = new Mutex();
   async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
     await this.controlInfoMutex.runExclusive(async () => {
       if (this.controlInfo === null){
@@ -233,11 +233,11 @@ export class DaikinSkyfiService implements DaikinService {
         controlInfo.ret = undefined;
         this.controlInfo = controlInfo;
       }
-  
+
       updateControlInfo(this.controlInfo);
       this.cache.set(this.get_control_info, this.controlInfo as ControlInfo);
-    } )
-    
+    } );
+
 
     if (this.timeoutId === null) {
       this.timeoutId = setTimeout(async() => {
@@ -420,7 +420,7 @@ export class DaikinSkyfiService implements DaikinService {
 
   private zoneTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private zoneStatus: ZoneInfo | null = null;
-  private readonly zoneInfoMutex = new Mutex()
+  private readonly zoneInfoMutex = new Mutex();
   async setZoneStatus(zoneNum: number, active: boolean) : Promise<void>{
     await this.zoneInfoMutex.runExclusive(async () => {
       if (this.zoneStatus === null){
@@ -430,23 +430,24 @@ export class DaikinSkyfiService implements DaikinService {
           this.log.error('setZoneStatus error: could not get zone info. no change in settings.');
           return;
         }
-        this.zoneStatus = zoneStatus
+        this.zoneStatus = zoneStatus;
       }
 
       const zones = decodeURIComponent(this.zoneStatus.zone_onoff).split(';');
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
       this.cache.set(this.get_zone_setting, this.zoneStatus);
-    })
+    });
 
     if (this.zoneTimeoutId === null) {
       this.zoneTimeoutId = setTimeout(async() => {
-        const zoneStatus = this.zoneStatus
-        const zoneTimeoutId = this.zoneTimeoutId
+        const zoneStatus = this.zoneStatus;
+        const zoneTimeoutId = this.zoneTimeoutId;
         this.zoneStatus = null;
-        this.zoneTimeoutId = null
+        this.zoneTimeoutId = null;
         try {
-          const resp = await this.http.get(`${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
+          const resp = await this.http.get(
+            `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
             {cache: false });
           const data = this.parseResponse(resp.data);
           if (resp.status === 200 && data['ret'] === 'OK') {
@@ -457,9 +458,9 @@ export class DaikinSkyfiService implements DaikinService {
         } catch (error) {
           this.log.error('setZoneStatus error: ' + error);
         } finally {
-          clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>)
+          clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
         }
-      }, 2000)
+      }, 2000);
     }
   }
 

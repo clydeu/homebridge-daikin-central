@@ -51,7 +51,7 @@ export class DaikinCentralPlatform implements DynamicPlatformPlugin {
     const zoneDevices: Device[] = [];
     this.enabledZones.forEach((z) => {
       zoneDevices.push({
-        uniqueId: `Daikin-Central-Zone-${z}-${uniqueId}`,
+        uniqueId: `Daikin-Central-Zone-${this.config.name}-${z}-${uniqueId}`,
         displayName: `Zone ${z}`,
         num: parseInt(z),
       });

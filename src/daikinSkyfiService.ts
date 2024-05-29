@@ -4,6 +4,7 @@ import { Cache, throttleAdapterEnhancer, retryAdapterEnhancer } from 'axios-exte
 import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinService';
 import { v4 as uuidv4 } from 'uuid';
 import { CoolingThresholdDefault, HeatingThresholdDefault } from './constants';
+import { Mutex } from 'async-mutex';
 
 type SensorInfo = {
   ret?: string;
@@ -219,18 +220,24 @@ export class DaikinSkyfiService implements DaikinService {
 
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
   private controlInfo: ControlInfo | null = null;
+  private readonly controlInfoMutex = new Mutex()
   async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
-    if (this.controlInfo === null){
-      const controlInfo = await this.getControlInfo(false);
-      if (controlInfo === null){
-        this.log.error('setControlInfo error: could not get control info. no change in settings.');
-        return;
+    await this.controlInfoMutex.runExclusive(async () => {
+      if (this.controlInfo === null){
+        this.log.info('setControlInfo: getting new control info.');
+        const controlInfo = await this.getControlInfo(false);
+        if (controlInfo === null){
+          this.log.error('setControlInfo error: could not get control info. no change in settings.');
+          return;
+        }
+        controlInfo.ret = undefined;
+        this.controlInfo = controlInfo;
       }
-      controlInfo.ret = undefined;
-      this.controlInfo = controlInfo;
-    }
-
-    updateControlInfo(this.controlInfo);
+  
+      updateControlInfo(this.controlInfo);
+      this.cache.set(this.get_control_info, this.controlInfo as ControlInfo);
+    } )
+    
 
     if (this.timeoutId === null) {
       this.timeoutId = setTimeout(async() => {
@@ -239,7 +246,6 @@ export class DaikinSkyfiService implements DaikinService {
         this.controlInfo = null;
         this.timeoutId = null;
         try {
-          this.cache.set(this.get_control_info, controlInfo as ControlInfo);
           const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
           const data = this.parseResponse(resp.data);
           if (resp.status === 200 && data['ret'] === 'OK') {
@@ -412,30 +418,48 @@ export class DaikinSkyfiService implements DaikinService {
     return zones[zoneNum - 1] === '1';
   }
 
+  private zoneTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private zoneStatus: ZoneInfo | null = null;
+  private readonly zoneInfoMutex = new Mutex()
   async setZoneStatus(zoneNum: number, active: boolean) : Promise<void>{
-    const zoneStatus = await this.getZoneInfo(false);
-    if (zoneStatus === null){
-      this.log.error('setZoneStatus error: could not get zone info. no change in settings.');
-      return;
-    }
-
-    const zones = decodeURIComponent(zoneStatus.zone_onoff).split(';');
-    zones[zoneNum -1] = (active) ? '1' : '0';
-    zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
-    this.cache.set(this.get_zone_setting, zoneStatus);
-
-    try {
-      const resp = await this.http.get(`${this.set_zone_setting}?zone_name=${zoneStatus.zone_name}&zone_onoff=${zoneStatus.zone_onoff}`,
-        {cache: false });
-      const data = this.parseResponse(resp.data);
-      if (resp.status === 200 && data['ret'] === 'OK') {
-        this.log.info('setZoneStatus: successfully updated zone info.');
-      } else {
-        this.log.error('setZoneStatus error: failed to update zone info.');
+    await this.zoneInfoMutex.runExclusive(async () => {
+      if (this.zoneStatus === null){
+        this.log.info('setZoneStatus: getting new zone status info.');
+        const zoneStatus = await this.getZoneInfo(false);
+        if (zoneStatus === null){
+          this.log.error('setZoneStatus error: could not get zone info. no change in settings.');
+          return;
+        }
+        this.zoneStatus = zoneStatus
       }
 
-    } catch (error) {
-      this.log.error('setZoneStatus error: ' + error);
+      const zones = decodeURIComponent(this.zoneStatus.zone_onoff).split(';');
+      zones[zoneNum -1] = (active) ? '1' : '0';
+      this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
+      this.cache.set(this.get_zone_setting, this.zoneStatus);
+    })
+
+    if (this.zoneTimeoutId === null) {
+      this.zoneTimeoutId = setTimeout(async() => {
+        const zoneStatus = this.zoneStatus
+        const zoneTimeoutId = this.zoneTimeoutId
+        this.zoneStatus = null;
+        this.zoneTimeoutId = null
+        try {
+          const resp = await this.http.get(`${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
+            {cache: false });
+          const data = this.parseResponse(resp.data);
+          if (resp.status === 200 && data['ret'] === 'OK') {
+            this.log.info('setZoneStatus: successfully updated zone info.');
+          } else {
+            this.log.error('setZoneStatus error: failed to update zone info.');
+          }
+        } catch (error) {
+          this.log.error('setZoneStatus error: ' + error);
+        } finally {
+          clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>)
+        }
+      }, 2000)
     }
   }
 

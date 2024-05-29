@@ -38,7 +38,7 @@ export class ZoneAccessory {
   }
 
   async setOn(value: CharacteristicValue) {
-    if (!this.acOn) {
+    if (this.platform.config.powerZone && !this.acOn) {
       return;
     }
 
@@ -59,10 +59,16 @@ export class ZoneAccessory {
   }
 
   async getOnValue(){
-    const acState = await this.daikinService.getAcState();
-    const zoneStatus = await this.daikinService.getZoneStatus(this.accessory.context.device.num);
-    this.acOn = acState?.power;
-    this.on = zoneStatus && acState?.power;
-    this.service.updateCharacteristic(this.platform.Characteristic.On, this.on);
+    if (this.platform.config.powerZone){
+      const acState = await this.daikinService.getAcState();
+      const zoneStatus = await this.daikinService.getZoneStatus(this.accessory.context.device.num);
+      this.acOn = acState?.power;
+      this.on = zoneStatus && acState?.power;
+      this.service.updateCharacteristic(this.platform.Characteristic.On, this.on);
+    } else {
+      const zoneStatus = await this.daikinService.getZoneStatus(this.accessory.context.device.num);
+      this.on = zoneStatus;
+      this.service.updateCharacteristic(this.platform.Characteristic.On, this.on);
+    }
   }
 }

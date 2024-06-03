@@ -292,7 +292,8 @@ export class DaikinSkyfiService implements DaikinService {
 
   async setHeatingTemp(temp: number) : Promise<void>{
     await this.setControlInfo((controlInfo) => {
-      controlInfo.stemp = temp;
+      if (controlInfo.mode == Mode.HEAT)
+        controlInfo.stemp = temp;
       controlInfo.dt1 = temp;
       this.log.info(`Updating heating temp to ${temp}`);
     });
@@ -300,7 +301,8 @@ export class DaikinSkyfiService implements DaikinService {
 
   async setCoolingTemp(temp: number) : Promise<void>{
     await this.setControlInfo((controlInfo) => {
-      controlInfo.stemp = temp;
+      if (controlInfo.mode == Mode.COOL)
+        controlInfo.stemp = temp;
       controlInfo.dt2 = temp;
       this.log.info(`Updating cooling temp to ${temp}`);
     });

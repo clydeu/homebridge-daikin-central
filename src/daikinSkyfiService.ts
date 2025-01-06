@@ -1,10 +1,11 @@
 import { Logger } from 'homebridge';
-import axios, { AxiosAdapter, AxiosInstance } from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import { Cache, throttleAdapterEnhancer, retryAdapterEnhancer } from 'axios-extensions';
 import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinService';
 import { v4 as uuidv4 } from 'uuid';
 import { CoolingThresholdDefault, HeatingThresholdDefault } from './constants';
 import { Mutex } from 'async-mutex';
+import { operation } from 'retry';
 
 type SensorInfo = {
   ret?: string;
@@ -134,60 +135,90 @@ export class DaikinSkyfiService implements DaikinService {
 
   private readonly http: AxiosInstance;
   private readonly powerSubscribers : PowerSubFunc[] = [];
+  private readonly acStateCache: Cache<string, object>;
   private readonly cache: Cache<string, object>;
   constructor(
     private readonly url: string,
     public readonly log: Logger,
   ) {
-    const myURL = new URL(url);
     this.http = axios.create({
       baseURL: this.url,
-      timeout: 2000,
-      headers: {
-        'User-Agent': 'axios',
-        'Host': myURL.hostname,
-      },
-      adapter: throttleAdapterEnhancer(retryAdapterEnhancer(axios.defaults.adapter as AxiosAdapter, {times: 5}), { threshold: 500 }),
+      timeout: 10000,
+      adapter: throttleAdapterEnhancer(retryAdapterEnhancer(axios.getAdapter(axios.defaults.adapter), {times: 5}), { threshold: 2000 }),
     });
-    this.cache = new Cache({ ttl: 5 * 60 * 1000, ttlAutopurge: true }); // by default cache AC state for 5 mins.
+    this.acStateCache = new Cache({ ttl: 5 * 60 * 1000, ttlAutopurge: true }); // by default cache AC state for 5 mins.
+    this.cache = new Cache({ max: 10 });
   }
 
+  private readonly sensorInfoMutex = new Mutex();
   async getSensorInfo(cache = true) : Promise<SensorInfo | null>{
-    const responsePromise = this.cache.get(this.get_sensor_info);
-    if (cache && responsePromise){
-      this.log.debug(`Using cached value for sensor info, refresh in ${Math.round(
-        this.cache.getRemainingTTL(this.get_sensor_info)/1000)}s`);
-      return responsePromise as SensorInfo;
-    }
-    try {
-      this.log.debug('Getting new sensor info from AC controller.');
-      const response = await this.http.get(this.get_sensor_info);
-      const data = this.parseResponse(response.data) as SensorInfo;
-      this.cache.set(this.get_sensor_info, data, { ttl: 60 * 1000});
-      return data;
-    } catch (error) {
-      this.log.error('getSensorInfo error: ' + error);
-      return null;
-    }
+    return await this.sensorInfoMutex.runExclusive(async () => {
+      const responsePromise = this.acStateCache.get(this.get_sensor_info);
+      if (cache && responsePromise){
+        this.log.debug(`Using cached value for sensor info, refresh in ${Math.round(
+          this.acStateCache.getRemainingTTL(this.get_sensor_info)/1000)}s`);
+        return responsePromise as SensorInfo;
+      }
+
+      try {
+        this.log.debug('Getting new sensor info from AC controller.');
+        const response = await this.http.get(this.get_sensor_info);
+        this.log.debug(`New sensor info from AC controller: ${response.data}`);
+        const data = this.parseResponse(response.data) as SensorInfo;
+        if (data.ret !== 'OK' || `${data.htemp}` === '-') {
+          throw Error(`failed to get sensor info. ${response.data}`);
+        }
+
+        this.acStateCache.set(this.get_sensor_info, data);
+        this.cache.set(this.get_sensor_info, data);
+        return data;
+      } catch (error) {
+        this.log.error(`getSensorInfo error: ${error}. Using stale cached data.`);
+        const cachedPromise = this.cache.get(this.get_sensor_info);
+        if (cachedPromise === null){
+          this.log.debug('There are no cached data for this query.');
+          return null;
+        } else {
+          return cachedPromise as SensorInfo;
+        }
+      }
+    });
   }
 
+  private readonly controlInfoMutex = new Mutex();
   async getControlInfo(cache = true) : Promise<ControlInfo | null>{
-    const responsePromise = this.cache.get(this.get_control_info);
-    if (cache && responsePromise){
-      this.log.debug(`Using cached value for control info, refresh in ${Math.round(
-        this.cache.getRemainingTTL(this.get_control_info)/1000)}s`);
-      return responsePromise as ControlInfo;
-    }
-    try {
-      this.log.debug('Getting new control info from AC controller.');
-      const response = await this.http.get(this.get_control_info, { cache: cache });
-      const data = this.parseResponse(response.data) as ControlInfo;
-      this.cache.set(this.get_control_info, data);
-      return data;
-    } catch (error) {
-      this.log.error('getControlInfo error: ' + error);
-      return null;
-    }
+    return await this.controlInfoMutex.runExclusive(async () => {
+      const responsePromise = this.acStateCache.get(this.get_control_info);
+      if (cache && responsePromise){
+        this.log.debug(`Using cached value for control info, refresh in ${Math.round(
+          this.acStateCache.getRemainingTTL(this.get_control_info)/1000)}s`);
+        return responsePromise as ControlInfo;
+      }
+
+      try {
+        this.log.debug('Getting new control info from AC controller.');
+        const response = await this.http.get(this.get_control_info, { cache: cache });
+        this.log.debug(`New control info from AC controller: ${response.data}`);
+        const data = this.parseResponse(response.data) as ControlInfo;
+        if (data.ret !== 'OK') {
+          throw Error(`failed to get control info. ${response.data}`);
+        }
+
+        data.ret = undefined;
+        this.acStateCache.set(this.get_control_info, data);
+        this.cache.set(this.get_control_info, data);
+        return data;
+      } catch (error) {
+        this.log.error(`getControlInfo error: ${error}. Using stale cached data.`);
+        const cachedPromise = this.cache.get(this.get_control_info);
+        if (cachedPromise === null){
+          this.log.debug('There are no cached data for this query.');
+          return null;
+        } else {
+          return cachedPromise as ControlInfo;
+        }
+      }
+    });
   }
 
   async getAcState() : Promise<AcState>{
@@ -214,28 +245,29 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   async getCurrentTemperature(): Promise<number>{
-    const sensorInfo = await this.getSensorInfo(false);
+    const sensorInfo = await this.getSensorInfo();
     return sensorInfo?.htemp ?? 0;
   }
 
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
   private controlInfo: ControlInfo | null = null;
-  private readonly controlInfoMutex = new Mutex();
+  private actualControlInfo: ControlInfo | null = null;
+  private readonly setControlInfoMutex = new Mutex();
   async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
-    await this.controlInfoMutex.runExclusive(async () => {
+    await this.setControlInfoMutex.runExclusive(async () => {
       if (this.controlInfo === null){
         this.log.info('setControlInfo: getting new control info.');
-        const controlInfo = await this.getControlInfo(false);
+        this.actualControlInfo = await this.getControlInfo(false);
+        const controlInfo = this.actualControlInfo ? { ...this.actualControlInfo } : null;
         if (controlInfo === null){
           this.log.error('setControlInfo error: could not get control info. no change in settings.');
           return;
         }
-        controlInfo.ret = undefined;
         this.controlInfo = controlInfo;
       }
 
       updateControlInfo(this.controlInfo);
-      this.cache.set(this.get_control_info, this.controlInfo as ControlInfo);
+      this.acStateCache.set(this.get_control_info, this.controlInfo as ControlInfo);
     } );
 
 
@@ -243,23 +275,48 @@ export class DaikinSkyfiService implements DaikinService {
       this.timeoutId = setTimeout(async() => {
         const controlInfo = this.controlInfo;
         const timeoutId = this.timeoutId;
+        const actualControlInfo = this.actualControlInfo;
         this.controlInfo = null;
         this.timeoutId = null;
-        try {
-          this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
-          const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
-          const data = this.parseResponse(resp.data);
-          if (resp.status === 200 && data['ret'] === 'OK') {
-            this.log.info('setControlInfo: successfully updated control info.');
-          } else {
-            this.log.error('setControlInfo error: failed to update control info.');
+        this.actualControlInfo = null;
+        if (actualControlInfo !== null){
+          if (JSON.stringify(controlInfo) === JSON.stringify(actualControlInfo)){
+            this.log.debug('setControlInfo: no control update needed');
+            return;
           }
-        } catch (error) {
-          this.log.error('setControlInfo error: ' + error);
-        } finally {
-          clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
         }
-      }, 500);
+
+        await this.controlInfoMutex.runExclusive(async () => {
+          const op = operation({
+            retries: 3,
+            factor: 2,
+            minTimeout: 5000,
+            maxTimeout: 60000,
+          });
+
+          op.attempt(async() => {
+            try {
+              this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
+              const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
+              const data = this.parseResponse(resp.data);
+              if (resp.status === 200 && data['ret'] === 'OK') {
+                this.log.info('setControlInfo: successfully updated control info.');
+              } else {
+                throw Error(`failed to update control info. ${resp.data}`);
+              }
+            } catch (error) {
+              this.log.error('setControlInfo error: ' + error);
+              if (op.retry(error)) {
+                return;
+              }
+              this.log.error('failed to update control info');
+              this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
+            } finally {
+              clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
+            }
+          });
+        });
+      }, 2000);
     }
   }
 
@@ -347,15 +404,26 @@ export class DaikinSkyfiService implements DaikinService {
     });
   }
 
-  async getModelInfo() : Promise<ModelInfo | null>{
-    try {
-      const response = await this.http.get(this.get_model_info);
-      const data = this.parseResponse(response.data);
-      return data as ModelInfo;
-    } catch (error) {
-      this.log.error('getModelInfo error: ' + error);
-      return null;
-    }
+  private readonly modelInfoMutex = new Mutex();
+  async getModelInfo(cache = true) : Promise<ModelInfo | null>{
+    return await this.modelInfoMutex.runExclusive(async () => {
+      const responsePromise = this.cache.get(this.get_model_info);
+      if (cache && responsePromise){
+        this.log.debug('Using cached value for model info');
+        return responsePromise as ModelInfo;
+      }
+
+      try {
+        const response = await this.http.get(this.get_model_info);
+        this.log.debug(`New model info from AC controller: ${response.data}`);
+        const data = this.parseResponse(response.data);
+        this.cache.set(this.get_model_info, data);
+        return data as ModelInfo;
+      } catch (error) {
+        this.log.error('getModelInfo error: ' + error);
+        return null;
+      }
+    });
   }
 
   async getCoolingThreshold() : Promise<TempThreshold>{
@@ -374,15 +442,25 @@ export class DaikinSkyfiService implements DaikinService {
     };
   }
 
-  async getBasicInfo() : Promise<BasicInfo | null>{
-    try {
-      const response = await this.http.get(this.get_basic_info);
-      const data = this.parseResponse(response.data);
-      return data as BasicInfo;
-    } catch (error) {
-      this.log.error('getBasicInfo error: ' + error);
-      return null;
-    }
+  private readonly basicInfoMutex = new Mutex();
+  async getBasicInfo(cache = true) : Promise<BasicInfo | null>{
+    return await this.basicInfoMutex.runExclusive(async () => {
+      const responsePromise = this.cache.get(this.get_basic_info);
+      if (cache && responsePromise){
+        this.log.debug('Using cached value for basic info');
+        return responsePromise as BasicInfo;
+      }
+      try {
+        const response = await this.http.get(this.get_basic_info);
+        this.log.debug(`New basic info from AC controller: ${response.data}`);
+        const data = this.parseResponse(response.data);
+        this.cache.set(this.get_basic_info, data);
+        return data as BasicInfo;
+      } catch (error) {
+        this.log.error('getBasicInfo error: ' + error);
+        return null;
+      }
+    });
   }
 
   async getAcModel(): Promise<AcModel>{
@@ -394,23 +472,39 @@ export class DaikinSkyfiService implements DaikinService {
     };
   }
 
+  private readonly zoneInfoMutex = new Mutex();
   private async getZoneInfo(cache = true) : Promise<ZoneInfo | null>{
-    const responsePromise = this.cache.get(this.get_zone_setting);
-    if (cache && responsePromise){
-      this.log.debug(`Using cached value for zone info, refresh in ${Math.round(this.cache.getRemainingTTL(this.get_zone_setting)/1000)}s`);
-      return responsePromise as ZoneInfo;
-    }
+    return await this.zoneInfoMutex.runExclusive(async () => {
+      const responsePromise = this.acStateCache.get(this.get_zone_setting);
+      if (cache && responsePromise){
+        this.log.debug(`Using cached value for zone info, refresh in 
+          ${Math.round(this.acStateCache.getRemainingTTL(this.get_zone_setting)/1000)}s`);
+        return responsePromise as ZoneInfo;
+      }
 
-    try {
-      this.log.debug('Getting new zone info from AC controller.');
-      const response = await this.http.get(this.get_zone_setting, {cache: cache});
-      const data = this.parseResponse(response.data) as ZoneInfo;
-      this.cache.set(this.get_zone_setting, data);
-      return data;
-    } catch (error) {
-      this.log.error('getZoneInfo error: ' + error);
-      return null;
-    }
+      try {
+        this.log.debug('Getting new zone info from AC controller.');
+        const response = await this.http.get(this.get_zone_setting, {cache: cache});
+        this.log.debug(`New zone info from AC controller: ${response.data}`);
+        const data = this.parseResponse(response.data) as ZoneInfo;
+        if (data.ret !== 'OK') {
+          throw Error(`failed to get zone info. ${response.data}`);
+        }
+
+        this.acStateCache.set(this.get_zone_setting, data);
+        this.cache.set(this.get_zone_setting, data);
+        return data;
+      } catch (error) {
+        this.log.error(`getZoneInfo error: ${error}. Using stale cached data.`);
+        const cachedPromise = this.cache.get(this.get_zone_setting);
+        if (cachedPromise === null){
+          this.log.debug('There are no cached data for zone info query.');
+          return null;
+        } else {
+          return cachedPromise as ZoneInfo;
+        }
+      }
+    });
   }
 
   async getZoneStatus(zoneNum: number) : Promise<boolean>{
@@ -425,12 +519,14 @@ export class DaikinSkyfiService implements DaikinService {
 
   private zoneTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private zoneStatus: ZoneInfo | null = null;
-  private readonly zoneInfoMutex = new Mutex();
+  private readonly setZoneInfoMutex = new Mutex();
+  private actualZoneInfo: ZoneInfo | null = null;
   async setZoneStatus(zoneNum: number, active: boolean) : Promise<void>{
-    await this.zoneInfoMutex.runExclusive(async () => {
+    await this.setZoneInfoMutex.runExclusive(async () => {
       if (this.zoneStatus === null){
         this.log.info('setZoneStatus: getting new zone status info.');
-        const zoneStatus = await this.getZoneInfo(false);
+        this.actualZoneInfo = await this.getZoneInfo(false);
+        const zoneStatus = this.actualZoneInfo ? { ...this.actualZoneInfo } : null;
         if (zoneStatus === null){
           this.log.error('setZoneStatus error: could not get zone info. no change in settings.');
           return;
@@ -441,30 +537,56 @@ export class DaikinSkyfiService implements DaikinService {
       const zones = decodeURIComponent(this.zoneStatus.zone_onoff).split(';');
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
-      this.cache.set(this.get_zone_setting, this.zoneStatus);
+      this.acStateCache.set(this.get_zone_setting, this.zoneStatus);
     });
 
     if (this.zoneTimeoutId === null) {
       this.zoneTimeoutId = setTimeout(async() => {
         const zoneStatus = this.zoneStatus;
         const zoneTimeoutId = this.zoneTimeoutId;
+        const actualZoneInfo = this.actualZoneInfo;
         this.zoneStatus = null;
         this.zoneTimeoutId = null;
-        try {
-          const resp = await this.http.get(
-            `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
-            {cache: false });
-          const data = this.parseResponse(resp.data);
-          if (resp.status === 200 && data['ret'] === 'OK') {
-            this.log.info('setZoneStatus: successfully updated zone info.');
-          } else {
-            this.log.error('setZoneStatus error: failed to update zone info.');
+        this.actualZoneInfo = null;
+
+        if (actualZoneInfo !== null){
+          if (JSON.stringify(zoneStatus) === JSON.stringify(actualZoneInfo)){
+            this.log.debug('setZoneStatus: no zone update needed');
+            return;
           }
-        } catch (error) {
-          this.log.error('setZoneStatus error: ' + error);
-        } finally {
-          clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
         }
+
+        await this.zoneInfoMutex.runExclusive(async () => {
+          const op = operation({
+            retries: 3,
+            factor: 2,
+            minTimeout: 5000,
+            maxTimeout: 60000,
+          });
+
+          op.attempt(async() => {
+            try {
+              const resp = await this.http.get(
+                `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
+                {cache: false });
+              const data = this.parseResponse(resp.data);
+              if (resp.status === 200 && data['ret'] === 'OK') {
+                this.log.info('setZoneStatus: successfully updated zone info.');
+              } else {
+                throw Error(`failed to update zone info. ${resp.data}`);
+              }
+            } catch (error) {
+              this.log.error('setZoneStatus error: ' + error);
+              if (op.retry(error)) {
+                return;
+              }
+              this.log.error('failed to update zone status');
+              this.acStateCache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
+            } finally {
+              clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
+            }
+          });
+        });
       }, 2000);
     }
   }

@@ -134,18 +134,20 @@ export class ACAccessory {
     }else {
       this.platform.log.debug('HttpLogService is NOT configured.');
     }
+
+    this.daikinService.getAcState();
   }
 
   async queryAcValues(){
     const newStates = await this.daikinService.getAcState();
 
-    if (this.httpLogService !== null && newStates.currentTemp > 0 && this.states.currentTemp !== newStates.currentTemp){
-      this.httpLogService.logTempReading(newStates.currentTemp);
-    }
-
     this.states = newStates;
     this.platform.log.debug(`queryAcValues: ${JSON.stringify(newStates)}`);
     this.updateHeaterCoolerServiceState();
+
+    if (this.httpLogService !== null && newStates.currentTemp > 0 && this.states.currentTemp !== newStates.currentTemp){
+      this.httpLogService.logTempReading(newStates.currentTemp);
+    }
   }
 
   updateHeaterCoolerServiceState(){

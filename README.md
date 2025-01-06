@@ -20,3 +20,6 @@ This plugin controls Diakin Central System locally using the Skyfi controller.
 --------------------------------------------------------------------
 * Fan and Dehumidification control may be supported in the future.
 * Humid sensor may be supported in the future.
+
+#### v1.1
+* There are instances where failed communication attempt to the AC controller results in the state being out of sync, thus; the communication with AC controller have been made to be robust.

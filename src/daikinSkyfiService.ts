@@ -233,10 +233,15 @@ export class DaikinSkyfiService implements DaikinService {
       fanSpeed = 5;
     }
 
+    let currentTemp = sensorInfo?.htemp;
+    if (!currentTemp || `${currentTemp}` === '-'){
+      currentTemp = controlInfo?.stemp ?? 0;
+    }
+
     return {
       power: (controlInfo?.pow === 1) ? true : false,
       mode: this.modeMapping[controlInfo?.mode ?? 8],
-      currentTemp: sensorInfo?.htemp ?? 0,
+      currentTemp: currentTemp,
       heatingTemp: controlInfo?.dt1 ?? HeatingThresholdDefault.min,
       coolingTemp: controlInfo?.dt2 ?? CoolingThresholdDefault.min,
       fanSpeed: fanSpeed,

@@ -200,7 +200,7 @@ export class DaikinSkyfiService implements DaikinService {
         const response = await this.http.get(this.get_control_info, { cache: cache });
         this.log.debug(`New control info from AC controller: ${response.data}`);
         const data = this.parseResponse(response.data) as ControlInfo;
-        if (data.ret !== 'OK') {
+        if (data.ret !== 'OK' || (data.mode === 0 && data.operate === 0 && data.stemp === 0)) {
           throw Error(`failed to get control info. ${response.data}`);
         }
 

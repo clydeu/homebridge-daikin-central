@@ -304,6 +304,9 @@ export class DaikinSkyfiService implements DaikinService {
                 const data = this.parseResponse(resp.data);
                 if (resp.status === 200 && data['ret'] === 'OK') {
                   this.log.info(`setControlInfo: successfully updated control info. ${resp.data}`);
+                  // sometimes the controller returns a successful response but actually failed to update the control info.
+                  // clearing the get control info cache should force a refresh.
+                  this.acStateCache.delete(this.get_control_info);
                 } else {
                   throw Error(`failed to update control info. ${resp.data}`);
                 }

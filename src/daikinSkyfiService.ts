@@ -273,56 +273,56 @@ export class DaikinSkyfiService implements DaikinService {
 
       updateControlInfo(this.controlInfo);
       this.acStateCache.set(this.get_control_info, this.controlInfo as ControlInfo);
-    } );
 
-
-    if (this.timeoutId === null) {
-      this.timeoutId = setTimeout(async() => {
-        const controlInfo = this.controlInfo;
-        const timeoutId = this.timeoutId;
-        const actualControlInfo = this.actualControlInfo;
-        this.controlInfo = null;
-        this.timeoutId = null;
-        this.actualControlInfo = null;
-        if (actualControlInfo !== null){
-          if (JSON.stringify(controlInfo) === JSON.stringify(actualControlInfo)){
-            this.log.debug('setControlInfo: no control update needed');
-            return;
-          }
-        }
-
-        await this.controlInfoMutex.runExclusive(async () => {
-          const op = operation({
-            retries: 3,
-            factor: 2,
-            minTimeout: 5000,
-            maxTimeout: 60000,
-          });
-
-          op.attempt(async() => {
-            try {
-              this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
-              const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
-              const data = this.parseResponse(resp.data);
-              if (resp.status === 200 && data['ret'] === 'OK') {
-                this.log.info('setControlInfo: successfully updated control info.');
-              } else {
-                throw Error(`failed to update control info. ${resp.data}`);
-              }
-            } catch (error) {
-              this.log.error('setControlInfo error: ' + error);
-              if (op.retry(error)) {
-                return;
-              }
-              this.log.error('failed to update control info');
-              this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
-            } finally {
-              clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
+      if (this.timeoutId === null) {
+        this.timeoutId = setTimeout(async() => {
+          const controlInfo = this.controlInfo;
+          const timeoutId = this.timeoutId;
+          const actualControlInfo = this.actualControlInfo;
+          this.controlInfo = null;
+          this.timeoutId = null;
+          this.actualControlInfo = null;
+          if (actualControlInfo !== null){
+            if (JSON.stringify(controlInfo) === JSON.stringify(actualControlInfo)){
+              this.log.debug('setControlInfo: no control update needed');
+              return;
             }
+          }
+
+          await this.controlInfoMutex.runExclusive(async () => {
+            const op = operation({
+              retries: 3,
+              factor: 2,
+              minTimeout: 5000,
+              maxTimeout: 10000,
+            });
+
+            op.attempt(async() => {
+              try {
+                this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
+                const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
+                const data = this.parseResponse(resp.data);
+                if (resp.status === 200 && data['ret'] === 'OK') {
+                  this.log.info('setControlInfo: successfully updated control info.');
+                } else {
+                  throw Error(`failed to update control info. ${resp.data}`);
+                }
+              } catch (error) {
+                this.log.error('setControlInfo error: ' + error);
+                if (op.retry(error)) {
+                  this.log.info('setControlInfo: retrying update control info.');
+                  return;
+                }
+                this.log.error('failed to update control info');
+                this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
+              } finally {
+                clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
+              }
+            });
           });
-        });
-      }, 2000);
-    }
+        }, 2000);
+      }
+    } );
   }
 
   async setPower(on: boolean) : Promise<void>{
@@ -543,57 +543,59 @@ export class DaikinSkyfiService implements DaikinService {
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
       this.acStateCache.set(this.get_zone_setting, this.zoneStatus);
-    });
+    
 
-    if (this.zoneTimeoutId === null) {
-      this.zoneTimeoutId = setTimeout(async() => {
-        const zoneStatus = this.zoneStatus;
-        const zoneTimeoutId = this.zoneTimeoutId;
-        const actualZoneInfo = this.actualZoneInfo;
-        this.zoneStatus = null;
-        this.zoneTimeoutId = null;
-        this.actualZoneInfo = null;
+      if (this.zoneTimeoutId === null) {
+        this.zoneTimeoutId = setTimeout(async() => {
+          const zoneStatus = this.zoneStatus;
+          const zoneTimeoutId = this.zoneTimeoutId;
+          const actualZoneInfo = this.actualZoneInfo;
+          this.zoneStatus = null;
+          this.zoneTimeoutId = null;
+          this.actualZoneInfo = null;
 
-        if (actualZoneInfo !== null){
-          if (JSON.stringify(zoneStatus) === JSON.stringify(actualZoneInfo)){
-            this.log.debug('setZoneStatus: no zone update needed');
-            return;
-          }
-        }
-
-        await this.zoneInfoMutex.runExclusive(async () => {
-          const op = operation({
-            retries: 3,
-            factor: 2,
-            minTimeout: 5000,
-            maxTimeout: 60000,
-          });
-
-          op.attempt(async() => {
-            try {
-              const resp = await this.http.get(
-                `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
-                {cache: false });
-              const data = this.parseResponse(resp.data);
-              if (resp.status === 200 && data['ret'] === 'OK') {
-                this.log.info('setZoneStatus: successfully updated zone info.');
-              } else {
-                throw Error(`failed to update zone info. ${resp.data}`);
-              }
-            } catch (error) {
-              this.log.error('setZoneStatus error: ' + error);
-              if (op.retry(error)) {
-                return;
-              }
-              this.log.error('failed to update zone status');
-              this.acStateCache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
-            } finally {
-              clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
+          if (actualZoneInfo !== null){
+            if (JSON.stringify(zoneStatus) === JSON.stringify(actualZoneInfo)){
+              this.log.debug('setZoneStatus: no zone update needed');
+              return;
             }
+          }
+
+          await this.zoneInfoMutex.runExclusive(async () => {
+            const op = operation({
+              retries: 3,
+              factor: 2,
+              minTimeout: 5000,
+              maxTimeout: 10000,
+            });
+
+            op.attempt(async() => {
+              try {
+                const resp = await this.http.get(
+                  `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
+                  {cache: false });
+                const data = this.parseResponse(resp.data);
+                if (resp.status === 200 && data['ret'] === 'OK') {
+                  this.log.info('setZoneStatus: successfully updated zone info.');
+                } else {
+                  throw Error(`failed to update zone info. ${resp.data}`);
+                }
+              } catch (error) {
+                this.log.error('setZoneStatus error: ' + error);
+                if (op.retry(error)) {
+                  this.log.info('setZoneStatus: retrying update zone info.');
+                  return;
+                }
+                this.log.error('failed to update zone status');
+                this.acStateCache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
+              } finally {
+                clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
+              }
+            });
           });
-        });
-      }, 2000);
-    }
+        }, 2000);
+      }
+    });
   }
 
   addPowerSubscriber(func: () => void) : void{

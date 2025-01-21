@@ -303,7 +303,7 @@ export class DaikinSkyfiService implements DaikinService {
                 const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
                 const data = this.parseResponse(resp.data);
                 if (resp.status === 200 && data['ret'] === 'OK') {
-                  this.log.info('setControlInfo: successfully updated control info.');
+                  this.log.info(`setControlInfo: successfully updated control info. ${resp.data}`);
                 } else {
                   throw Error(`failed to update control info. ${resp.data}`);
                 }

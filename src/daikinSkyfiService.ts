@@ -162,7 +162,10 @@ export class DaikinSkyfiService implements DaikinService {
     } catch (error) {
       this.log.debug(`HTTP request error: ${error}`);
       if (retryCount > 0) {
-        const delay = 5000 + (Math.random() * 5000); // 5 to 10 secs
+        const attempt = 3 - retryCount + 1;
+        const baseDelay = 2000;
+        const jitter = Math.random() * 3000; // 0-3 sec random offset
+        const delay = baseDelay * 2 ** attempt + jitter; // 4-19 seconds delay
         this.log.debug(`Retrying HTTP request ${url} in ${Math.round(delay)}ms (${retryCount} retries left)...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return await this.httpGet(url, getResponseObject, config, retryCount - 1);

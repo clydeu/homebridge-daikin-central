@@ -184,11 +184,11 @@ export class DaikinSkyfiService implements DaikinService {
       try {
         this.log.debug('Getting new sensor info from AC controller.');
         const d = await this.httpGet(this.get_sensor_info, response => {
-          this.log.debug(`New sensor info from AC controller: ${response.data}`);
           const data = this.parseResponse(response.data) as SensorInfo;
           if (data.ret !== 'OK' || `${data.htemp}` === '-') {
             throw Error(`failed to get sensor info. ${response.data}`);
           }
+          this.log.debug(`New sensor info from AC controller: ${response.data}`);
           return data;
         });
 
@@ -222,11 +222,11 @@ export class DaikinSkyfiService implements DaikinService {
       try {
         this.log.debug('Getting new control info from AC controller.');
         const d = await this.httpGet(this.get_control_info, response => {
-          this.log.debug(`New control info from AC controller: ${response.data}`);
           const data = this.parseResponse(response.data) as ControlInfo;
           if (data.ret !== 'OK' || (data.mode === 0 && data.operate === 0 && data.stemp === 0)) {
             throw Error(`failed to get control info. ${response.data}`);
           }
+          this.log.debug(`New control info from AC controller: ${response.data}`);
           return data;
         }, { cache: cache });
 
@@ -508,12 +508,14 @@ export class DaikinSkyfiService implements DaikinService {
       try {
         this.log.debug('Getting new zone info from AC controller.');
         return await this.httpGet(this.get_zone_setting, response => {
-          this.log.debug(`New zone info from AC controller: ${response.data}`);
           const data = this.parseResponse(response.data) as ZoneInfo;
           if (data.ret !== 'OK') {
             throw Error(`failed to get zone info. ${response.data}`);
+          } else if (decodeURIComponent(data.zone_onoff).split(';').every(zone => zone === '0')) {
+            throw Error('All zones are off, this might be the controller giving wrong info.');
           }
 
+          this.log.debug(`New zone info from AC controller: ${response.data}`);
           this.acStateCache.set(this.get_zone_setting, data);
           this.cache.set(this.get_zone_setting, data);
           return data;

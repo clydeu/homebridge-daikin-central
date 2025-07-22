@@ -1,6 +1,6 @@
 import { Logger } from 'homebridge';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { Cache, throttleAdapterEnhancer, retryAdapterEnhancer } from 'axios-extensions';
+import { Cache, retryAdapterEnhancer } from 'axios-extensions';
 import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinService';
 import { v4 as uuidv4 } from 'uuid';
 import { CoolingThresholdDefault, HeatingThresholdDefault } from './constants';
@@ -144,7 +144,7 @@ export class DaikinSkyfiService implements DaikinService {
     this.http = rateLimit(axios.create({
       baseURL: this.url,
       timeout: 10000,
-      adapter: throttleAdapterEnhancer(retryAdapterEnhancer(axios.getAdapter(axios.defaults.adapter), {times: 5}), { threshold: 2000 }),
+      adapter: retryAdapterEnhancer(axios.getAdapter(axios.defaults.adapter), {times: 5}),
     }), { maxRequests: 1, perMilliseconds: 1000 });
     this.acStateCache = new Cache({ ttl: 5 * 60 * 1000, ttlAutopurge: true }); // by default cache AC state for 5 mins.
     this.cache = new Cache({ max: 10 });

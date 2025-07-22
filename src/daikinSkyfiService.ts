@@ -1,11 +1,12 @@
 import { Logger } from 'homebridge';
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { Cache, throttleAdapterEnhancer, retryAdapterEnhancer } from 'axios-extensions';
 import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinService';
 import { v4 as uuidv4 } from 'uuid';
 import { CoolingThresholdDefault, HeatingThresholdDefault } from './constants';
 import { Mutex } from 'async-mutex';
 import { operation } from 'retry';
+import rateLimit from 'axios-rate-limit';
 
 type SensorInfo = {
   ret?: string;
@@ -141,13 +142,33 @@ export class DaikinSkyfiService implements DaikinService {
     private readonly url: string,
     public readonly log: Logger,
   ) {
-    this.http = axios.create({
+    this.http = rateLimit(axios.create({
       baseURL: this.url,
       timeout: 10000,
       adapter: throttleAdapterEnhancer(retryAdapterEnhancer(axios.getAdapter(axios.defaults.adapter), {times: 5}), { threshold: 2000 }),
-    });
+    }), { maxRequests: 1, perMilliseconds: 1000 });
     this.acStateCache = new Cache({ ttl: 5 * 60 * 1000, ttlAutopurge: true }); // by default cache AC state for 5 mins.
     this.cache = new Cache({ max: 10 });
+  }
+
+  async httpGet(url: string, config?: AxiosRequestConfig, retryCount = 3) : Promise<AxiosResponse> {
+    try {
+      const response = await this.http.get(url, config);
+      if (response.status === 200) {
+        return response;
+      } else {
+        throw Error(`HTTP request ${url} failed with status ${response.status}`);
+      }
+    } catch (error) {
+      this.log.debug(`HTTP request error: ${error}`);
+      if (retryCount > 0) {
+        const delay = 2000 + (Math.random() * 3000); // 2 to 5 secs
+        this.log.debug(`Retrying HTTP request ${url} in ${Math.round(delay)}ms (${retryCount} retries left)...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return await this.httpGet(url, config, retryCount - 1);
+      }
+      throw error;
+    }
   }
 
   private readonly sensorInfoMutex = new Mutex();
@@ -162,7 +183,7 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new sensor info from AC controller.');
-        const response = await this.http.get(this.get_sensor_info);
+        const response = await this.httpGet(this.get_sensor_info);
         this.log.debug(`New sensor info from AC controller: ${response.data}`);
         const data = this.parseResponse(response.data) as SensorInfo;
         if (data.ret !== 'OK' || `${data.htemp}` === '-') {
@@ -197,7 +218,7 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new control info from AC controller.');
-        const response = await this.http.get(this.get_control_info, { cache: cache });
+        const response = await this.httpGet(this.get_control_info, { cache: cache });
         this.log.debug(`New control info from AC controller: ${response.data}`);
         const data = this.parseResponse(response.data) as ControlInfo;
         if (data.ret !== 'OK' || (data.mode === 0 && data.operate === 0 && data.stemp === 0)) {
@@ -300,7 +321,7 @@ export class DaikinSkyfiService implements DaikinService {
             op.attempt(async() => {
               try {
                 this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
-                const resp = await this.http.get(this.set_control_info, {params: controlInfo, cache: false });
+                const resp = await this.httpGet(this.set_control_info, {params: controlInfo, cache: false });
                 const data = this.parseResponse(resp.data);
                 if (resp.status === 200 && data['ret'] === 'OK') {
                   this.log.info(`setControlInfo: successfully updated control info. ${resp.data}`);
@@ -422,7 +443,7 @@ export class DaikinSkyfiService implements DaikinService {
       }
 
       try {
-        const response = await this.http.get(this.get_model_info);
+        const response = await this.httpGet(this.get_model_info);
         this.log.debug(`New model info from AC controller: ${response.data}`);
         const data = this.parseResponse(response.data);
         this.cache.set(this.get_model_info, data);
@@ -459,7 +480,7 @@ export class DaikinSkyfiService implements DaikinService {
         return responsePromise as BasicInfo;
       }
       try {
-        const response = await this.http.get(this.get_basic_info);
+        const response = await this.httpGet(this.get_basic_info);
         this.log.debug(`New basic info from AC controller: ${response.data}`);
         const data = this.parseResponse(response.data);
         this.cache.set(this.get_basic_info, data);
@@ -492,7 +513,7 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new zone info from AC controller.');
-        const response = await this.http.get(this.get_zone_setting, {cache: cache});
+        const response = await this.httpGet(this.get_zone_setting, {cache: cache});
         this.log.debug(`New zone info from AC controller: ${response.data}`);
         const data = this.parseResponse(response.data) as ZoneInfo;
         if (data.ret !== 'OK') {
@@ -546,7 +567,7 @@ export class DaikinSkyfiService implements DaikinService {
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
       this.acStateCache.set(this.get_zone_setting, this.zoneStatus);
-    
+
 
       if (this.zoneTimeoutId === null) {
         this.zoneTimeoutId = setTimeout(async() => {
@@ -574,7 +595,7 @@ export class DaikinSkyfiService implements DaikinService {
 
             op.attempt(async() => {
               try {
-                const resp = await this.http.get(
+                const resp = await this.httpGet(
                   `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
                   {cache: false });
                 const data = this.parseResponse(resp.data);

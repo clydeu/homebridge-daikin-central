@@ -5,7 +5,6 @@ import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinSe
 import { v4 as uuidv4 } from 'uuid';
 import { CoolingThresholdDefault, HeatingThresholdDefault } from './constants';
 import { Mutex } from 'async-mutex';
-import { operation } from 'retry';
 import rateLimit from 'axios-rate-limit';
 
 type SensorInfo = {
@@ -151,11 +150,12 @@ export class DaikinSkyfiService implements DaikinService {
     this.cache = new Cache({ max: 10 });
   }
 
-  async httpGet(url: string, config?: AxiosRequestConfig, retryCount = 3) : Promise<AxiosResponse> {
+  async httpGet<T>(url: string, getResponseObject: (response: AxiosResponse) => T, config?: AxiosRequestConfig, retryCount = 3)
+  : Promise<T> {
     try {
       const response = await this.http.get(url, config);
       if (response.status === 200) {
-        return response;
+        return getResponseObject(response);
       } else {
         throw Error(`HTTP request ${url} failed with status ${response.status}`);
       }
@@ -165,7 +165,7 @@ export class DaikinSkyfiService implements DaikinService {
         const delay = 2000 + (Math.random() * 3000); // 2 to 5 secs
         this.log.debug(`Retrying HTTP request ${url} in ${Math.round(delay)}ms (${retryCount} retries left)...`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        return await this.httpGet(url, config, retryCount - 1);
+        return await this.httpGet(url, getResponseObject, config, retryCount - 1);
       }
       throw error;
     }
@@ -183,16 +183,19 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new sensor info from AC controller.');
-        const response = await this.httpGet(this.get_sensor_info);
-        this.log.debug(`New sensor info from AC controller: ${response.data}`);
-        const data = this.parseResponse(response.data) as SensorInfo;
-        if (data.ret !== 'OK' || `${data.htemp}` === '-') {
-          throw Error(`failed to get sensor info. ${response.data}`);
-        }
+        const d = await this.httpGet(this.get_sensor_info, response => {
+          this.log.debug(`New sensor info from AC controller: ${response.data}`);
+          const data = this.parseResponse(response.data) as SensorInfo;
+          if (data.ret !== 'OK' || `${data.htemp}` === '-') {
+            throw Error(`failed to get sensor info. ${response.data}`);
+          }
+          return data;
+        });
 
-        this.acStateCache.set(this.get_sensor_info, data);
-        this.cache.set(this.get_sensor_info, data);
-        return data;
+
+        this.acStateCache.set(this.get_sensor_info, d);
+        this.cache.set(this.get_sensor_info, d);
+        return d;
       } catch (error) {
         this.log.error(`getSensorInfo error: ${error}. Using stale cached data.`);
         const cachedPromise = this.cache.get(this.get_sensor_info);
@@ -218,17 +221,19 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new control info from AC controller.');
-        const response = await this.httpGet(this.get_control_info, { cache: cache });
-        this.log.debug(`New control info from AC controller: ${response.data}`);
-        const data = this.parseResponse(response.data) as ControlInfo;
-        if (data.ret !== 'OK' || (data.mode === 0 && data.operate === 0 && data.stemp === 0)) {
-          throw Error(`failed to get control info. ${response.data}`);
-        }
+        const d = await this.httpGet(this.get_control_info, response => {
+          this.log.debug(`New control info from AC controller: ${response.data}`);
+          const data = this.parseResponse(response.data) as ControlInfo;
+          if (data.ret !== 'OK' || (data.mode === 0 && data.operate === 0 && data.stemp === 0)) {
+            throw Error(`failed to get control info. ${response.data}`);
+          }
+          return data;
+        }, { cache: cache });
 
-        data.ret = undefined;
-        this.acStateCache.set(this.get_control_info, data);
-        this.cache.set(this.get_control_info, data);
-        return data;
+        d.ret = undefined;
+        this.acStateCache.set(this.get_control_info, d);
+        this.cache.set(this.get_control_info, d);
+        return d;
       } catch (error) {
         this.log.error(`getControlInfo error: ${error}. Using stale cached data.`);
         const cachedPromise = this.cache.get(this.get_control_info);
@@ -311,17 +316,9 @@ export class DaikinSkyfiService implements DaikinService {
           }
 
           await this.controlInfoMutex.runExclusive(async () => {
-            const op = operation({
-              retries: 3,
-              factor: 2,
-              minTimeout: 5000,
-              maxTimeout: 10000,
-            });
-
-            op.attempt(async() => {
-              try {
-                this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
-                const resp = await this.httpGet(this.set_control_info, {params: controlInfo, cache: false });
+            this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
+            try {
+              await this.httpGet(this.set_control_info, resp => {
                 const data = this.parseResponse(resp.data);
                 if (resp.status === 200 && data['ret'] === 'OK') {
                   this.log.info(`setControlInfo: successfully updated control info. ${resp.data}`);
@@ -331,18 +328,13 @@ export class DaikinSkyfiService implements DaikinService {
                 } else {
                   throw Error(`failed to update control info. ${resp.data}`);
                 }
-              } catch (error) {
-                this.log.error('setControlInfo error: ' + error);
-                if (op.retry(error)) {
-                  this.log.info('setControlInfo: retrying update control info.');
-                  return;
-                }
-                this.log.error('failed to update control info');
-                this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
-              } finally {
-                clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
-              }
-            });
+              }, {params: controlInfo, cache: false });
+            } catch (error) {
+              this.log.error('setControlInfo error: ' + error);
+              this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
+            } finally {
+              clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
+            }
           });
         }, 2000);
       }
@@ -443,11 +435,12 @@ export class DaikinSkyfiService implements DaikinService {
       }
 
       try {
-        const response = await this.httpGet(this.get_model_info);
-        this.log.debug(`New model info from AC controller: ${response.data}`);
-        const data = this.parseResponse(response.data);
-        this.cache.set(this.get_model_info, data);
-        return data as ModelInfo;
+        return await this.httpGet(this.get_model_info, resp => {
+          this.log.debug(`New model info from AC controller: ${resp.data}`);
+          const data = this.parseResponse(resp.data);
+          this.cache.set(this.get_model_info, data);
+          return data as ModelInfo;
+        });
       } catch (error) {
         this.log.error('getModelInfo error: ' + error);
         return null;
@@ -480,11 +473,12 @@ export class DaikinSkyfiService implements DaikinService {
         return responsePromise as BasicInfo;
       }
       try {
-        const response = await this.httpGet(this.get_basic_info);
-        this.log.debug(`New basic info from AC controller: ${response.data}`);
-        const data = this.parseResponse(response.data);
-        this.cache.set(this.get_basic_info, data);
-        return data as BasicInfo;
+        return await this.httpGet(this.get_basic_info, response => {
+          this.log.debug(`New basic info from AC controller: ${response.data}`);
+          const data = this.parseResponse(response.data);
+          this.cache.set(this.get_basic_info, data);
+          return data as BasicInfo;
+        });
       } catch (error) {
         this.log.error('getBasicInfo error: ' + error);
         return null;
@@ -513,16 +507,17 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new zone info from AC controller.');
-        const response = await this.httpGet(this.get_zone_setting, {cache: cache});
-        this.log.debug(`New zone info from AC controller: ${response.data}`);
-        const data = this.parseResponse(response.data) as ZoneInfo;
-        if (data.ret !== 'OK') {
-          throw Error(`failed to get zone info. ${response.data}`);
-        }
+        return await this.httpGet(this.get_zone_setting, response => {
+          this.log.debug(`New zone info from AC controller: ${response.data}`);
+          const data = this.parseResponse(response.data) as ZoneInfo;
+          if (data.ret !== 'OK') {
+            throw Error(`failed to get zone info. ${response.data}`);
+          }
 
-        this.acStateCache.set(this.get_zone_setting, data);
-        this.cache.set(this.get_zone_setting, data);
-        return data;
+          this.acStateCache.set(this.get_zone_setting, data);
+          this.cache.set(this.get_zone_setting, data);
+          return data;
+        }, {cache: cache});
       } catch (error) {
         this.log.error(`getZoneInfo error: ${error}. Using stale cached data.`);
         const cachedPromise = this.cache.get(this.get_zone_setting);
@@ -586,36 +581,23 @@ export class DaikinSkyfiService implements DaikinService {
           }
 
           await this.zoneInfoMutex.runExclusive(async () => {
-            const op = operation({
-              retries: 3,
-              factor: 2,
-              minTimeout: 5000,
-              maxTimeout: 10000,
-            });
-
-            op.attempt(async() => {
-              try {
-                const resp = await this.httpGet(
-                  `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`,
-                  {cache: false });
-                const data = this.parseResponse(resp.data);
-                if (resp.status === 200 && data['ret'] === 'OK') {
-                  this.log.info('setZoneStatus: successfully updated zone info.');
-                } else {
-                  throw Error(`failed to update zone info. ${resp.data}`);
-                }
-              } catch (error) {
-                this.log.error('setZoneStatus error: ' + error);
-                if (op.retry(error)) {
-                  this.log.info('setZoneStatus: retrying update zone info.');
-                  return;
-                }
-                this.log.error('failed to update zone status');
-                this.acStateCache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
-              } finally {
-                clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
-              }
-            });
+            try {
+              await this.httpGet(
+                `${this.set_zone_setting}?zone_name=${zoneStatus?.zone_name}&zone_onoff=${zoneStatus?.zone_onoff}`, resp => {
+                  const data = this.parseResponse(resp.data);
+                  if (data['ret'] === 'OK') {
+                    this.log.info('setZoneStatus: successfully updated zone info.');
+                  } else {
+                    throw Error(`failed to update zone info. ${resp.data}`);
+                  }
+                },
+                {cache: false });
+            } catch (error) {
+              this.log.error('setZoneStatus error: ' + error);
+              this.acStateCache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
+            } finally {
+              clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
+            }
           });
         }, 2000);
       }

@@ -202,7 +202,7 @@ export class DaikinSkyfiService implements DaikinService {
       } catch (error) {
         this.log.error(`getSensorInfo error: ${error}. Using stale cached data.`);
         const cachedPromise = this.cache.get(this.get_sensor_info);
-        if (cachedPromise === null){
+        if (cachedPromise == null){
           this.log.debug('There are no cached data for this query.');
           return null;
         } else {
@@ -240,7 +240,7 @@ export class DaikinSkyfiService implements DaikinService {
       } catch (error) {
         this.log.error(`getControlInfo error: ${error}. Using stale cached data.`);
         const cachedPromise = this.cache.get(this.get_control_info);
-        if (cachedPromise === null){
+        if (cachedPromise == null){
           this.log.debug('There are no cached data for this query.');
           return null;
         } else {
@@ -289,11 +289,11 @@ export class DaikinSkyfiService implements DaikinService {
   private readonly setControlInfoMutex = new Mutex();
   async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
     await this.setControlInfoMutex.runExclusive(async () => {
-      if (this.controlInfo === null){
+      if (this.controlInfo == null){
         this.log.info('setControlInfo: getting new control info.');
         this.actualControlInfo = await this.getControlInfo(false);
         const controlInfo = this.actualControlInfo ? { ...this.actualControlInfo } : null;
-        if (controlInfo === null){
+        if (controlInfo == null){
           this.log.error('setControlInfo error: could not get control info. no change in settings.');
           return;
         }
@@ -303,7 +303,7 @@ export class DaikinSkyfiService implements DaikinService {
       updateControlInfo(this.controlInfo);
       this.acStateCache.set(this.get_control_info, this.controlInfo as ControlInfo);
 
-      if (this.timeoutId === null) {
+      if (this.timeoutId == null) {
         this.timeoutId = setTimeout(async() => {
           const controlInfo = this.controlInfo;
           const timeoutId = this.timeoutId;
@@ -311,7 +311,7 @@ export class DaikinSkyfiService implements DaikinService {
           this.controlInfo = null;
           this.timeoutId = null;
           this.actualControlInfo = null;
-          if (actualControlInfo !== null){
+          if (actualControlInfo != null){
             if (JSON.stringify(controlInfo) === JSON.stringify(actualControlInfo)){
               this.log.debug('setControlInfo: no control update needed');
               return;
@@ -498,6 +498,10 @@ export class DaikinSkyfiService implements DaikinService {
     };
   }
 
+  private getZoneOnOff(zone_onoff: string): string[]{
+    return decodeURIComponent(zone_onoff).split(';');
+  }
+
   private readonly zoneInfoMutex = new Mutex();
   private async getZoneInfo(cache = true) : Promise<ZoneInfo | null>{
     return await this.zoneInfoMutex.runExclusive(async () => {
@@ -512,9 +516,11 @@ export class DaikinSkyfiService implements DaikinService {
         this.log.debug('Getting new zone info from AC controller.');
         return await this.httpGet(this.get_zone_setting, response => {
           const data = this.parseResponse(response.data) as ZoneInfo;
+          const cache = this.acStateCache.get(this.get_zone_setting);
           if (data.ret !== 'OK') {
             throw Error(`failed to get zone info. ${response.data}`);
-          } else if (decodeURIComponent(data.zone_onoff).split(';').every(zone => zone === '0')) {
+          } else if (this.getZoneOnOff(data.zone_onoff).every(zone => zone === '0') &&
+          cache != null && this.getZoneOnOff((cache as ZoneInfo).zone_onoff).some(zone => zone === '1')) {
             throw Error('All zones are off, this might be the controller giving wrong info.');
           }
 
@@ -526,7 +532,7 @@ export class DaikinSkyfiService implements DaikinService {
       } catch (error) {
         this.log.error(`getZoneInfo error: ${error}. Using stale cached data.`);
         const cachedPromise = this.cache.get(this.get_zone_setting);
-        if (cachedPromise === null){
+        if (cachedPromise == null){
           this.log.debug('There are no cached data for zone info query.');
           return null;
         } else {
@@ -538,7 +544,7 @@ export class DaikinSkyfiService implements DaikinService {
 
   async getZoneStatus(zoneNum: number) : Promise<boolean>{
     const data = await this.getZoneInfo();
-    if (data === null) {
+    if (data == null) {
       return false;
     }
 
@@ -552,11 +558,11 @@ export class DaikinSkyfiService implements DaikinService {
   private actualZoneInfo: ZoneInfo | null = null;
   async setZoneStatus(zoneNum: number, active: boolean) : Promise<void>{
     await this.setZoneInfoMutex.runExclusive(async () => {
-      if (this.zoneStatus === null){
+      if (this.zoneStatus == null){
         this.log.info('setZoneStatus: getting new zone status info.');
         this.actualZoneInfo = await this.getZoneInfo(false);
         const zoneStatus = this.actualZoneInfo ? { ...this.actualZoneInfo } : null;
-        if (zoneStatus === null){
+        if (zoneStatus == null){
           this.log.error('setZoneStatus error: could not get zone info. no change in settings.');
           return;
         }
@@ -569,7 +575,7 @@ export class DaikinSkyfiService implements DaikinService {
       this.acStateCache.set(this.get_zone_setting, this.zoneStatus);
 
 
-      if (this.zoneTimeoutId === null) {
+      if (this.zoneTimeoutId == null) {
         this.zoneTimeoutId = setTimeout(async() => {
           const zoneStatus = this.zoneStatus;
           const zoneTimeoutId = this.zoneTimeoutId;
@@ -578,7 +584,7 @@ export class DaikinSkyfiService implements DaikinService {
           this.zoneTimeoutId = null;
           this.actualZoneInfo = null;
 
-          if (actualZoneInfo !== null){
+          if (actualZoneInfo != null){
             if (JSON.stringify(zoneStatus) === JSON.stringify(actualZoneInfo)){
               this.log.debug('setZoneStatus: no zone update needed');
               return;

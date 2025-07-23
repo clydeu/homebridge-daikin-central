@@ -153,11 +153,14 @@ export class DaikinSkyfiService implements DaikinService {
   : Promise<T> {
     try {
       const response = await this.httpMutex.runExclusive(async () => {
-        this.log.debug(`Starting HTTP GET request to ${url}`);
-        const r = await this.http.get(url, config);
-        this.log.debug(`Finished GET request to ${url}`);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Adding a delay to avoid overwhelming the controler with requests
-        return r;
+        try {
+          this.log.debug(`Starting HTTP GET request to ${url}`);
+          const r = await this.http.get(url, config);
+          this.log.debug(`Finished GET request to ${url}`);
+          return r;
+        } finally {
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Adding a delay to avoid overwhelming the controler with requests
+        }
       });
       if (response.status === 200) {
         return getResponseObject(response);

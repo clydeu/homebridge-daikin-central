@@ -1,11 +1,10 @@
 import { Logger } from 'homebridge';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { Cache, retryAdapterEnhancer } from 'axios-extensions';
+import { Cache } from 'axios-extensions';
 import { AcState, DaikinService, Mode, AcModel, TempThreshold } from './daikinService';
 import { v4 as uuidv4 } from 'uuid';
 import { CoolingThresholdDefault, HeatingThresholdDefault } from './constants';
 import { Mutex } from 'async-mutex';
-import rateLimit from 'axios-rate-limit';
 
 type SensorInfo = {
   ret?: string;
@@ -141,19 +140,25 @@ export class DaikinSkyfiService implements DaikinService {
     private readonly url: string,
     public readonly log: Logger,
   ) {
-    this.http = rateLimit(axios.create({
+    this.http = axios.create({
       baseURL: this.url,
       timeout: 10000,
-      adapter: retryAdapterEnhancer(axios.getAdapter(axios.defaults.adapter), {times: 5}),
-    }), { maxRequests: 1, perMilliseconds: 1000 });
+    });
     this.acStateCache = new Cache({ ttl: 5 * 60 * 1000, ttlAutopurge: true }); // by default cache AC state for 5 mins.
     this.cache = new Cache({ max: 10 });
   }
 
-  async httpGet<T>(url: string, getResponseObject: (response: AxiosResponse) => T, config?: AxiosRequestConfig, retryCount = 3)
+  private readonly httpMutex = new Mutex();
+  async httpGet<T>(url: string, getResponseObject: (response: AxiosResponse) => T, config?: AxiosRequestConfig, retryCount = 5)
   : Promise<T> {
     try {
-      const response = await this.http.get(url, config);
+      const response = await this.httpMutex.runExclusive(async () => {
+        this.log.debug(`Starting HTTP GET request to ${url}`);
+        const r = await this.http.get(url, config);
+        this.log.debug(`Finished GET request to ${url}`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Adding a delay to avoid overwhelming the controler with requests
+        return r;
+      });
       if (response.status === 200) {
         return getResponseObject(response);
       } else {
@@ -162,10 +167,10 @@ export class DaikinSkyfiService implements DaikinService {
     } catch (error) {
       this.log.debug(`HTTP request error: ${error}`);
       if (retryCount > 0) {
-        const attempt = 3 - retryCount + 1;
+        const attempt = 5 - retryCount + 1;
         const baseDelay = 2000;
         const jitter = Math.random() * 3000; // 0-3 sec random offset
-        const delay = baseDelay * 2 ** attempt + jitter; // 4-19 seconds delay
+        const delay = baseDelay * 2 ** attempt + jitter;
         this.log.debug(`Retrying HTTP request ${url} in ${Math.round(delay)}ms (${retryCount} retries left)...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return await this.httpGet(url, getResponseObject, config, retryCount - 1);
@@ -251,8 +256,8 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   async getAcState() : Promise<AcState>{
-    const sensorInfo = await this.getSensorInfo();
     const controlInfo = await this.getControlInfo();
+    const sensorInfo = await this.getSensorInfo();
 
     let fanSpeed = controlInfo?.f_rate ?? 0;
     if (controlInfo?.f_airside === 1) {

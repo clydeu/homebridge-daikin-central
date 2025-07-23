@@ -548,7 +548,7 @@ export class DaikinSkyfiService implements DaikinService {
       return false;
     }
 
-    const zones = decodeURIComponent(data.zone_onoff).split(';');
+    const zones = this.getZoneOnOff(data.zone_onoff);
     return zones[zoneNum - 1] === '1';
   }
 
@@ -569,7 +569,7 @@ export class DaikinSkyfiService implements DaikinService {
         this.zoneStatus = zoneStatus;
       }
 
-      const zones = decodeURIComponent(this.zoneStatus.zone_onoff).split(';');
+      const zones = this.getZoneOnOff(this.zoneStatus.zone_onoff);
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
       this.acStateCache.set(this.get_zone_setting, this.zoneStatus);

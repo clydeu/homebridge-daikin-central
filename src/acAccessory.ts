@@ -128,7 +128,7 @@ export class ACAccessory {
         this.states.currentTemp = temperature;
         this.temperatureService.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, temperature);
         if (temperature !== this.states.currentTemp) {
-          httpLogService.logTempReading(temperature);
+          await httpLogService.logTempReading(temperature);
         }
       }, 15 * 60 * 1000); //every 15 mins
     }else {
@@ -146,7 +146,7 @@ export class ACAccessory {
     this.updateHeaterCoolerServiceState();
 
     if (this.httpLogService !== null && newStates.currentTemp > 0 && this.states.currentTemp !== newStates.currentTemp){
-      this.httpLogService.logTempReading(newStates.currentTemp);
+      await this.httpLogService.logTempReading(newStates.currentTemp);
     }
   }
 

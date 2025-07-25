@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge Daikin Central",
   "name": "homebridge-daikin-central",
-  "version": "1.1.0-beta.12",
+  "version": "1.1.0-beta.13",
   "description": "Homebridge plugin for operating centralize Daikin AC.",
   "license": "Apache-2.0",
   "repository": {

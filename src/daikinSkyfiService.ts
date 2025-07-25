@@ -506,7 +506,7 @@ export class DaikinSkyfiService implements DaikinService {
     };
   }
 
-  private getZoneOnOff(zone_onoff: string): string[]{
+  private decodeZoneStatus(zone_onoff: string): string[]{
     return decodeURIComponent(zone_onoff).split(';');
   }
 
@@ -526,10 +526,14 @@ export class DaikinSkyfiService implements DaikinService {
           const data = this.parseResponse(response.data) as ZoneInfo;
           if (data.ret !== 'OK') {
             throw Error(`failed to get zone info. ${response.data}`);
-          } else if (this.getZoneOnOff(data.zone_onoff).every(zone => zone === '0')) {
+          } else if (this.decodeZoneStatus(data.zone_onoff).every(zone => zone === '0')) {
             const cache = this.cache.get(this.get_zone_setting);
-            this.log.debug(`cached zone info: ${cache}`);
-            if (cache != null && this.getZoneOnOff((cache as ZoneInfo).zone_onoff).some(zone => zone === '1')) {
+            if (cache == null) {
+              throw Error('Cache is not set and all zones are off, this might be the controller giving wrong info.');
+            }
+            const cachedZoneStatus = (cache as ZoneInfo).zone_onoff;
+            this.log.debug(`cached zone status: ${cachedZoneStatus}`);
+            if (this.decodeZoneStatus(cachedZoneStatus).some(zone => zone === '1')) {
               throw Error('All zones are off, this might be the controller giving wrong info.');
             }
           }
@@ -558,7 +562,7 @@ export class DaikinSkyfiService implements DaikinService {
       return false;
     }
 
-    const zones = this.getZoneOnOff(data.zone_onoff);
+    const zones = this.decodeZoneStatus(data.zone_onoff);
     return zones[zoneNum - 1] === '1';
   }
 
@@ -579,7 +583,7 @@ export class DaikinSkyfiService implements DaikinService {
         this.zoneStatus = zoneStatus;
       }
 
-      const zones = this.getZoneOnOff(this.zoneStatus.zone_onoff);
+      const zones = this.decodeZoneStatus(this.zoneStatus.zone_onoff);
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
       this.acStateCache.set(this.get_zone_setting, this.zoneStatus);

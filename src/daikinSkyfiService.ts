@@ -524,12 +524,14 @@ export class DaikinSkyfiService implements DaikinService {
         this.log.debug('Getting new zone info from AC controller.');
         return await this.httpGet(this.get_zone_setting, response => {
           const data = this.parseResponse(response.data) as ZoneInfo;
-          const cache = this.acStateCache.get(this.get_zone_setting);
           if (data.ret !== 'OK') {
             throw Error(`failed to get zone info. ${response.data}`);
-          } else if (this.getZoneOnOff(data.zone_onoff).every(zone => zone === '0') &&
-          cache != null && this.getZoneOnOff((cache as ZoneInfo).zone_onoff).some(zone => zone === '1')) {
-            throw Error('All zones are off, this might be the controller giving wrong info.');
+          } else if (this.getZoneOnOff(data.zone_onoff).every(zone => zone === '0')) {
+            const cache = this.cache.get(this.get_zone_setting);
+            this.log.debug(`cached zone info: ${cache}`);
+            if (cache != null && this.getZoneOnOff((cache as ZoneInfo).zone_onoff).some(zone => zone === '1')) {
+              throw Error('All zones are off, this might be the controller giving wrong info.');
+            }
           }
 
           this.log.debug(`New zone info from AC controller: ${response.data}`);
@@ -581,6 +583,7 @@ export class DaikinSkyfiService implements DaikinService {
       zones[zoneNum -1] = (active) ? '1' : '0';
       this.zoneStatus.zone_onoff = encodeURIComponent(zones.join(';'));
       this.acStateCache.set(this.get_zone_setting, this.zoneStatus);
+      this.cache.set(this.get_zone_setting, this.zoneStatus);
 
 
       if (this.zoneTimeoutId == null) {
@@ -614,6 +617,7 @@ export class DaikinSkyfiService implements DaikinService {
             } catch (error) {
               this.log.error('setZoneStatus error: ' + error);
               this.acStateCache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
+              this.cache.set(this.get_zone_setting, actualZoneInfo as ZoneInfo);
             } finally {
               clearTimeout(zoneTimeoutId as ReturnType<typeof setTimeout>);
             }

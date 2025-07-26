@@ -149,7 +149,11 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   private readonly httpMutex = new Mutex();
-  async httpGet<T>(url: string, getResponseObject: (response: AxiosResponse) => T, config?: AxiosRequestConfig, retryCount = 5)
+  async httpGet<T>(
+    url: string,
+    getResponseObject: (response: AxiosResponse, retyrCount: number) => T,
+    config?: AxiosRequestConfig,
+    retryCount = 5)
   : Promise<T> {
     try {
       const response = await this.httpMutex.runExclusive(async () => {
@@ -163,7 +167,7 @@ export class DaikinSkyfiService implements DaikinService {
         }
       });
       if (response.status === 200) {
-        return getResponseObject(response);
+        return getResponseObject(response, retryCount);
       } else {
         throw Error(`HTTP request ${url} failed with status ${response.status}`);
       }
@@ -522,11 +526,11 @@ export class DaikinSkyfiService implements DaikinService {
 
       try {
         this.log.debug('Getting new zone info from AC controller.');
-        return await this.httpGet(this.get_zone_setting, response => {
+        return await this.httpGet(this.get_zone_setting, (response, retryCount) => {
           const data = this.parseResponse(response.data) as ZoneInfo;
           if (data.ret !== 'OK') {
             throw Error(`failed to get zone info. ${response.data}`);
-          } else if (this.decodeZoneStatus(data.zone_onoff).every(zone => zone === '0')) {
+          } else if (this.decodeZoneStatus(data.zone_onoff).every(zone => zone === '0') && retryCount > 0) {
             const cache = this.cache.get(this.get_zone_setting);
             if (cache == null) {
               throw Error('Cache is not set and all zones are off, this might be the controller giving wrong info.');

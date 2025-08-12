@@ -149,7 +149,7 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   private readonly httpMutex = new Mutex();
-  async httpGet<T>(
+  private async httpGet<T>(
     url: string,
     getResponseObject: (response: AxiosResponse, retyrCount: number) => T,
     config?: AxiosRequestConfig,
@@ -225,7 +225,7 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   private readonly controlInfoMutex = new Mutex();
-  async getControlInfo(cache = true) : Promise<ControlInfo | null>{
+  private async getControlInfo(cache = true) : Promise<ControlInfo | null>{
     return await this.controlInfoMutex.runExclusive(async () => {
       const responsePromise = this.acStateCache.get(this.get_control_info);
       if (cache && responsePromise){
@@ -299,7 +299,7 @@ export class DaikinSkyfiService implements DaikinService {
   private controlInfo: ControlInfo | null = null;
   private actualControlInfo: ControlInfo | null = null;
   private readonly setControlInfoMutex = new Mutex();
-  async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
+  private async setControlInfo(updateControlInfo: (controlInfo:ControlInfo) => void) : Promise<void>{
     await this.setControlInfoMutex.runExclusive(async () => {
       if (this.controlInfo == null){
         this.log.info('setControlInfo: getting new control info.');
@@ -316,44 +316,53 @@ export class DaikinSkyfiService implements DaikinService {
       this.acStateCache.set(this.get_control_info, this.controlInfo as ControlInfo);
 
       if (this.timeoutId == null) {
-        this.timeoutId = setTimeout(async() => {
-          const controlInfo = this.controlInfo;
-          const timeoutId = this.timeoutId;
-          const actualControlInfo = this.actualControlInfo;
-          this.controlInfo = null;
-          this.timeoutId = null;
-          this.actualControlInfo = null;
-          if (actualControlInfo != null){
-            if (JSON.stringify(controlInfo) === JSON.stringify(actualControlInfo)){
-              this.log.debug('setControlInfo: no control update needed');
-              return;
-            }
-          }
-
-          await this.controlInfoMutex.runExclusive(async () => {
-            this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
-            try {
-              await this.httpGet(this.set_control_info, resp => {
-                const data = this.parseResponse(resp.data);
-                if (resp.status === 200 && data['ret'] === 'OK') {
-                  this.log.info(`setControlInfo: successfully updated control info. ${resp.data}`);
-                  // sometimes the controller returns a successful response but actually failed to update the control info.
-                  // clearing the get control info cache should force a refresh.
-                  this.acStateCache.delete(this.get_control_info);
-                } else {
-                  throw Error(`failed to update control info. ${resp.data}`);
-                }
-              }, {params: controlInfo, cache: false });
-            } catch (error) {
-              this.log.error('setControlInfo error: ' + error);
-              this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
-            } finally {
-              clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
-            }
-          });
-        }, 2000);
+        this.timeoutId = setTimeout(this.updateControlInfo, 2000);
       }
-    } );
+    });
+  }
+
+  private async updateControlInfo() {
+    await this.setControlInfoMutex.runExclusive(async () => {
+      const controlInfo = this.controlInfo;
+      const timeoutId = this.timeoutId;
+      let actualControlInfo = this.actualControlInfo;
+      this.controlInfo = null;
+      this.timeoutId = null;
+      this.actualControlInfo = null;
+      if (actualControlInfo != null){
+        if (JSON.stringify(controlInfo) === JSON.stringify(actualControlInfo)){
+          this.log.debug('setControlInfo: no control update needed');
+          return;
+        }
+      }
+      this.log.debug(`setControlInfo: updating control with ${JSON.stringify(controlInfo)}`);
+      try {
+        let setCounter = 0;
+        while (JSON.stringify(controlInfo) !== JSON.stringify(actualControlInfo)){
+          if (setCounter === 3) {
+            this.log.error(`setControlInfo: colud not control the AC despite 3 attempts.`);
+            break;
+          }
+          setCounter++;
+          await this.httpGet(this.set_control_info, resp => {
+            const data = this.parseResponse(resp.data);
+            if (resp.status === 200 && data['ret'] === 'OK') {
+              this.log.info(`setControlInfo: successfully updated control info. ${resp.data}`);
+            } else {
+              throw Error(`failed to update control info. ${resp.data}`);
+            }
+          }, {params: controlInfo, cache: false });
+          // sometimes the controller returns a successful response but actually failed to update the control info.
+          // so this will request for the control info and just try to set it again. Do it 3 times then give up.
+          actualControlInfo = await this.getControlInfo(false);
+        }
+      } catch (error) {
+        this.log.error('setControlInfo: ' + error);
+        this.acStateCache.set(this.get_control_info, actualControlInfo as ControlInfo);
+      } finally {
+        clearTimeout(timeoutId as ReturnType<typeof setTimeout>);
+      }
+    });
   }
 
   async setPower(on: boolean) : Promise<void>{
@@ -480,7 +489,7 @@ export class DaikinSkyfiService implements DaikinService {
   }
 
   private readonly basicInfoMutex = new Mutex();
-  async getBasicInfo(cache = true) : Promise<BasicInfo | null>{
+  private async getBasicInfo(cache = true) : Promise<BasicInfo | null>{
     return await this.basicInfoMutex.runExclusive(async () => {
       const responsePromise = this.cache.get(this.get_basic_info);
       if (cache && responsePromise){

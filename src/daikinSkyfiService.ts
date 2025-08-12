@@ -316,7 +316,7 @@ export class DaikinSkyfiService implements DaikinService {
       this.acStateCache.set(this.get_control_info, this.controlInfo as ControlInfo);
 
       if (this.timeoutId == null) {
-        this.timeoutId = setTimeout(this.updateControlInfo, 2000);
+        this.timeoutId = setTimeout(this.updateControlInfo.bind(this), 2000);
       }
     });
   }
@@ -340,7 +340,7 @@ export class DaikinSkyfiService implements DaikinService {
         let setCounter = 0;
         while (JSON.stringify(controlInfo) !== JSON.stringify(actualControlInfo)){
           if (setCounter === 3) {
-            this.log.error(`setControlInfo: colud not control the AC despite 3 attempts.`);
+            this.log.error('setControlInfo: colud not control the AC despite 3 attempts.');
             break;
           }
           setCounter++;
